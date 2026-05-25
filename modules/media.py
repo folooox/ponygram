@@ -93,6 +93,15 @@ def _ydl_opts(out_path: str) -> list[dict]:
     ]
 
 
+_AUTH_REQUIRED_PHRASES = ("login required", "requires authentication", "age-restricted",
+                          "private video", "login to confirm", "not available", "rate-limit")
+
+
+def _is_auth_error(msg: str) -> bool:
+    m = msg.lower()
+    return any(p in m for p in _AUTH_REQUIRED_PHRASES)
+
+
 def _run_ydl(url: str, out_path: str) -> Optional[dict]:
     import yt_dlp
     for opts in _ydl_opts(out_path):
@@ -105,8 +114,14 @@ def _run_ydl(url: str, out_path: str) -> Optional[dict]:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
-            log.warning("yt-dlp attempt failed", error=str(e))
+            err_str = str(e)
+            log.warning("yt-dlp attempt failed", error=err_str)
+            if _is_auth_error(err_str):
+                return None  # no point retrying other formats
             continue
+        except BaseException as e:
+            log.warning("yt-dlp attempt failed (base)", error=str(e))
+            return None
         candidates = sorted(
             Path(out_path).parent.glob(Path(out_path).stem + "*"),
             key=lambda p: p.stat().st_size if p.exists() else 0,
@@ -129,6 +144,9 @@ def _run_ydl_info(url: str) -> Optional[dict]:
             return ydl.extract_info(url, download=False)
     except Exception as e:
         log.warning("yt-dlp info failed", error=str(e))
+        return None
+    except BaseException as e:
+        log.warning("yt-dlp info failed (base)", error=str(e))
         return None
 
 
@@ -261,6 +279,12 @@ async def _process_url(update: Update, context, url: str) -> None:
         log.warning("Media send failed", error=str(e))
         try:
             await status.edit_text(f"❌ {e}")
+        except TelegramError:
+            pass
+    except Exception as e:
+        log.warning("Media pipeline error", error=str(e))
+        try:
+            await status.delete()
         except TelegramError:
             pass
     finally:

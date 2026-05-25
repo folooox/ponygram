@@ -110,7 +110,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request, error: str = ""):
-        return templates.TemplateResponse("login.html", {"request": request, "error": error})
+        return templates.TemplateResponse(request, "login.html", {"error": error})
 
     @app.post("/login")
     async def login_post(password: str = Form(...)):
@@ -146,8 +146,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             warn_count = (await s.execute(select(func.count()).select_from(UserWarn))).scalar_one()
             rss_count = (await s.execute(select(func.count()).select_from(RssFeed))).scalar_one()
 
-        return templates.TemplateResponse("dashboard.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "dashboard.html", {
             "active": "dashboard",
             "user_count": user_count,
             "group_count": group_count,
@@ -171,8 +170,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 await s.execute(select(GroupSettings).order_by(GroupSettings.chat_id))
             ).scalars().all())
 
-        return templates.TemplateResponse("groups.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "groups.html", {
             "active": "groups",
             "groups": rows,
         })
@@ -234,8 +232,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         g = await get_group_settings(chat_id)
-        return templates.TemplateResponse("group.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "group.html", {
             "active": "groups",
             "g": g,
             "saved": bool(saved),
@@ -297,8 +294,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 await s.execute(select(Blacklist).order_by(Blacklist.added_at.desc()))
             ).scalars().all())
 
-        return templates.TemplateResponse("blacklist.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "blacklist.html", {
             "active": "blacklist",
             "entries": rows,
             "msg": msg,
@@ -336,8 +332,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         feeds = await get_all_rss_feeds()
-        return templates.TemplateResponse("rss.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "rss.html", {
             "active": "rss",
             "feeds": feeds,
             "msg": msg,
@@ -406,8 +401,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         configs = await get_all_bot_configs()
-        return templates.TemplateResponse("settings.html", {
-            "request": request,
+        return templates.TemplateResponse(request, "settings.html", {
             "active": "settings",
             "configs": configs,
             "saved": bool(saved),
