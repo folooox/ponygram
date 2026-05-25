@@ -125,6 +125,17 @@ class BotConfig(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class PlatformCredential(Base):
+    """Encrypted login credentials for Playwright cookie auto-refresh."""
+    __tablename__ = "platform_credentials"
+
+    platform = Column(String(32), primary_key=True)   # e.g. "instagram"
+    username = Column(Text, nullable=False)
+    password_enc = Column(Text, nullable=False)        # Fernet-encrypted with bot token
+    last_refresh_at = Column(DateTime, nullable=True)
+    last_refresh_ok = Column(Boolean, nullable=True)   # None=never tried
+
+
 # ---------------------------------------------------------------------------
 # Engine / session factory
 # ---------------------------------------------------------------------------
@@ -443,3 +454,48 @@ async def get_all_rss_feeds() -> List[RssFeed]:
             select(RssFeed).order_by(RssFeed.chat_id, RssFeed.id)
         )
         return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# PlatformCredential helpers
+# ---------------------------------------------------------------------------
+
+async def get_credential(platform: str) -> Optional[PlatformCredential]:
+    async with get_session() as s:
+        return await s.get(PlatformCredential, platform)
+
+
+async def set_credential(platform: str, username: str, password_enc: str) -> None:
+    async with get_session() as s:
+        row = await s.get(PlatformCredential, platform)
+        if row:
+            row.username = username
+            row.password_enc = password_enc
+        else:
+            s.add(PlatformCredential(platform=platform, username=username, password_enc=password_enc))
+        await s.commit()
+
+
+async def delete_credential(platform: str) -> None:
+    async with get_session() as s:
+        row = await s.get(PlatformCredential, platform)
+        if row:
+            await s.delete(row)
+            await s.commit()
+
+
+async def get_all_credentials() -> List[PlatformCredential]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(PlatformCredential).order_by(PlatformCredential.platform)
+        )
+        return list(result.scalars().all())
+
+
+async def update_credential_refresh(platform: str, ok: bool) -> None:
+    async with get_session() as s:
+        row = await s.get(PlatformCredential, platform)
+        if row:
+            row.last_refresh_at = datetime.utcnow()
+            row.last_refresh_ok = ok
+            await s.commit()

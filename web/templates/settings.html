@@ -121,4 +121,120 @@
     </button>
   </div>
 </form>
+
+{# ── 账号凭据（自动刷新 Cookie）────────────────── #}
+<form method="post" action="/settings/credentials" class="mt-4">
+  <div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+    <div class="card-body">
+      <h6 class="fw-semibold mb-1 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+        账号凭据（Playwright 自动刷新）
+      </h6>
+      <p class="text-secondary small mb-3">
+        配置账号密码后，Cookie 失效时 bot 会自动用 Playwright 无头浏览器重新登录并更新 Cookie。
+        密码经 AES-256 加密后存储在数据库，不会以明文保存。
+      </p>
+      <div class="alert py-2 mb-4" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.82rem">
+        <div class="fw-semibold mb-1" style="color:#7eb8f7"><i class="bi bi-info-circle me-1"></i>注意事项</div>
+        <ul class="mb-0 ps-3" style="color:#adb5bd">
+          <li>目前支持自动刷新：<strong>Instagram、Twitter/X、Bilibili、TikTok</strong></li>
+          <li>抖音、快手、小红书、YouTube 需手动更新 Cookie（需手机验证码/OAuth）</li>
+          <li>部分平台可能因验证码或设备绑定导致自动登录失败</li>
+          <li>留空密码则不更新已保存的凭据</li>
+        </ul>
+      </div>
+
+      {% set cred_platforms = [
+        ("instagram", "Instagram",   "bi-instagram"),
+        ("twitter",   "Twitter / X", "bi-twitter-x"),
+        ("bilibili",  "Bilibili",    "bi-play-circle"),
+        ("tiktok",    "TikTok",      "bi-music-note-beamed"),
+      ] %}
+
+      {% for slug, name, icon in cred_platforms %}
+      {% set cred = credentials.get(slug) %}
+      <div class="mb-4 p-3" style="background:#161926;border-radius:.5rem">
+        <div class="d-flex align-items-center gap-2 mb-2">
+          <i class="bi {{ icon }} text-secondary"></i>
+          <strong>{{ name }}</strong>
+          {% if cred %}
+            {% if cred.last_refresh_ok == True %}
+            <span class="badge ms-1" style="background:#1a4731;color:#4ade80;font-size:.65rem">上次刷新成功</span>
+            {% elif cred.last_refresh_ok == False %}
+            <span class="badge ms-1" style="background:#4a1a1a;color:#f87171;font-size:.65rem">上次刷新失败</span>
+            {% else %}
+            <span class="badge bg-secondary ms-1" style="font-size:.65rem">从未触发</span>
+            {% endif %}
+          {% else %}
+          <span class="badge bg-secondary ms-1" style="font-size:.65rem">未配置</span>
+          {% endif %}
+          {% if cred %}
+          <button type="button" class="btn btn-sm ms-auto py-0 px-2"
+                  style="background:#1a2535;border:1px solid #2d4a6e;color:#7eb8f7;font-size:.75rem"
+                  onclick="triggerRefresh('{{ slug }}', this)">
+            <i class="bi bi-arrow-clockwise me-1"></i>立即刷新
+          </button>
+          {% endif %}
+        </div>
+        <div class="row g-2">
+          <div class="col-md-5">
+            <input type="text" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="cred_username_{{ slug }}"
+                   placeholder="用户名 / 邮箱"
+                   value="{{ cred.username if cred else '' }}">
+          </div>
+          <div class="col-md-5">
+            <input type="password" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="cred_password_{{ slug }}"
+                   placeholder="{% if cred %}••••••••（留空不更改）{% else %}密码{% endif %}">
+          </div>
+          <div class="col-md-2">
+            {% if cred %}
+            <button type="button" class="btn btn-sm btn-outline-danger w-100"
+                    onclick="document.querySelector('[name=cred_action_{{ slug }}]').value='delete';this.closest('form').submit()">
+              删除
+            </button>
+            <input type="hidden" name="cred_action_{{ slug }}" value="">
+            {% endif %}
+          </div>
+        </div>
+        {% if cred and cred.last_refresh_at %}
+        <div class="form-text text-secondary mt-1" style="font-size:.75rem">
+          上次刷新：{{ cred.last_refresh_at.strftime('%Y-%m-%d %H:%M') }} UTC
+        </div>
+        {% endif %}
+      </div>
+      {% endfor %}
+
+    </div>
+  </div>
+
+  <div class="mt-2">
+    <button type="submit" class="btn btn-primary">
+      <i class="bi bi-floppy me-1"></i> 保存凭据
+    </button>
+  </div>
+</form>
+
+<script>
+async function triggerRefresh(platform, btn) {
+  const orig = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>刷新中…';
+  try {
+    const r = await fetch(`/settings/credentials/${platform}/refresh`, {method:'POST'});
+    const data = await r.json();
+    if (data.success) {
+      btn.innerHTML = '<i class="bi bi-check-circle me-1"></i>刷新成功';
+      btn.style.color = '#4ade80';
+      setTimeout(() => location.reload(), 1500);
+    } else {
+      btn.innerHTML = '<i class="bi bi-x-circle me-1"></i>' + (data.error || '失败');
+      btn.style.color = '#f87171';
+      setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; btn.style.color = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.innerHTML = orig; btn.disabled = false;
+  }
+}
+</script>
 {% endblock %}
