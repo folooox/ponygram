@@ -388,7 +388,19 @@ if ! $SKIP_CONFIG; then
                 warn "Password must be at least 8 characters"
             fi
         done
-        read_input "  Web UI port" WEB_PORT "8080"
+        # Pick a free port
+        DEFAULT_PORT="8080"
+        while ss -tlnp 2>/dev/null | grep -q ":${DEFAULT_PORT} " || \
+              lsof -iTCP:"${DEFAULT_PORT}" -sTCP:LISTEN &>/dev/null 2>&1; do
+            DEFAULT_PORT=$((DEFAULT_PORT + 1))
+        done
+        [[ "$DEFAULT_PORT" != "8080" ]] && warn "Port 8080 in use — suggesting $DEFAULT_PORT"
+        read_input "  Web UI port" WEB_PORT "$DEFAULT_PORT"
+        # Final check: warn if chosen port is still busy
+        if ss -tlnp 2>/dev/null | grep -q ":${WEB_PORT} " || \
+           lsof -iTCP:"${WEB_PORT}" -sTCP:LISTEN &>/dev/null 2>&1; then
+            warn "Port $WEB_PORT appears to be in use — container may fail to start"
+        fi
     fi
 
     echo ""
