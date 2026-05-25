@@ -1,3 +1,6 @@
+# Claude Code internal tooling
+.claude/
+
 # Environment variables
 .env
 .env.local
