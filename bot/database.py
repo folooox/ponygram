@@ -6,14 +6,15 @@ Tables
 users           — every user seen by the bot
 group_settings  — per-group configuration (welcome text, verification, etc.)
 blacklist       — banned user IDs (global)
-antispam_rules  — per-group anti-spam config
+rss_feeds       — per-chat RSS subscriptions
+rss_sent        — deduplication log of pushed entries
 """
 
 from __future__ import annotations
 
-import json
+import hashlib
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -24,7 +25,7 @@ from sqlalchemy import (
     String,
     Text,
     select,
-    update,
+    delete,
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
@@ -74,6 +75,29 @@ class Blacklist(Base):
     reason = Column(Text, nullable=True)
     added_by = Column(BigInteger, nullable=True)
     added_at = Column(DateTime, default=datetime.utcnow)
+
+
+class RssFeed(Base):
+    __tablename__ = "rss_feeds"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(BigInteger, nullable=False, index=True)
+    url = Column(Text, nullable=False)
+    label = Column(String(128), nullable=True)   # human-friendly name
+    added_by = Column(BigInteger, nullable=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    paused = Column(Boolean, default=False)
+    last_fetched = Column(DateTime, nullable=True)
+
+
+class RssSent(Base):
+    """Deduplication: tracks entry GUIDs/links already pushed per feed."""
+    __tablename__ = "rss_sent"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feed_id = Column(Integer, nullable=False, index=True)
+    entry_hash = Column(String(64), nullable=False)   # sha256 of guid or link
+    sent_at = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -181,3 +205,98 @@ async def set_group_field(chat_id: int, **kwargs: Any) -> None:
             for k, v in kwargs.items():
                 setattr(row, k, v)
         await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# RSS helpers
+# ---------------------------------------------------------------------------
+
+async def add_rss_feed(chat_id: int, url: str, label: str = "", added_by: int = 0) -> RssFeed:
+    async with get_session() as s:
+        feed = RssFeed(chat_id=chat_id, url=url, label=label or None, added_by=added_by)
+        s.add(feed)
+        await s.commit()
+        return feed
+
+
+async def remove_rss_feed(feed_id: int, chat_id: int) -> bool:
+    """Delete a feed only if it belongs to chat_id. Returns True if deleted."""
+    async with get_session() as s:
+        row = await s.get(RssFeed, feed_id)
+        if not row or row.chat_id != chat_id:
+            return False
+        # Delete sent history for this feed too
+        await s.execute(delete(RssSent).where(RssSent.feed_id == feed_id))
+        await s.delete(row)
+        await s.commit()
+        return True
+
+
+async def get_rss_feeds(chat_id: int) -> List[RssFeed]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(RssFeed).where(RssFeed.chat_id == chat_id).order_by(RssFeed.id)
+        )
+        return list(result.scalars().all())
+
+
+async def get_all_active_feeds() -> List[RssFeed]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(RssFeed).where(RssFeed.paused == False)  # noqa: E712
+        )
+        return list(result.scalars().all())
+
+
+async def set_feed_paused(feed_id: int, chat_id: int, paused: bool) -> bool:
+    async with get_session() as s:
+        row = await s.get(RssFeed, feed_id)
+        if not row or row.chat_id != chat_id:
+            return False
+        row.paused = paused
+        await s.commit()
+        return True
+
+
+async def mark_feed_fetched(feed_id: int) -> None:
+    async with get_session() as s:
+        row = await s.get(RssFeed, feed_id)
+        if row:
+            row.last_fetched = datetime.utcnow()
+            await s.commit()
+
+
+def _entry_hash(entry) -> str:
+    key = getattr(entry, "id", None) or getattr(entry, "link", "") or entry.get("title", "")
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def is_entry_sent(feed_id: int, entry) -> bool:
+    h = _entry_hash(entry)
+    async with get_session() as s:
+        result = await s.execute(
+            select(RssSent).where(RssSent.feed_id == feed_id, RssSent.entry_hash == h)
+        )
+        return result.scalar() is not None
+
+
+async def mark_entry_sent(feed_id: int, entry) -> None:
+    h = _entry_hash(entry)
+    async with get_session() as s:
+        s.add(RssSent(feed_id=feed_id, entry_hash=h))
+        await s.commit()
+
+
+async def prune_sent_history(feed_id: int, keep: int = 500) -> None:
+    """Keep only the most recent `keep` sent entries to prevent unbounded growth."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(RssSent.id)
+            .where(RssSent.feed_id == feed_id)
+            .order_by(RssSent.id.desc())
+            .offset(keep)
+        )
+        old_ids = [row[0] for row in result.all()]
+        if old_ids:
+            await s.execute(delete(RssSent).where(RssSent.id.in_(old_ids)))
+            await s.commit()
