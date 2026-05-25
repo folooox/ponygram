@@ -67,6 +67,7 @@ class GroupSettings(Base):
     antispam_window = Column(Integer, default=5)       # seconds
     antiad_enabled = Column(Boolean, default=False)
     dlmode_enabled = Column(Boolean, default=False)    # auto media URL detection
+    aichat_enabled = Column(Boolean, default=False)    # AI auto-reply on @mention
 
 
 class Blacklist(Base):
