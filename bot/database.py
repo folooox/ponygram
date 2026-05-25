@@ -133,6 +133,27 @@ _engine = None
 _session_factory: Optional[async_sessionmaker] = None
 
 
+async def _migrate(conn) -> None:
+    """Add missing columns to existing tables (SQLite ALTER TABLE)."""
+    from sqlalchemy import text
+
+    # Columns added after v1 — (table, column, definition)
+    migrations = [
+        ("group_settings", "is_active",       "BOOLEAN NOT NULL DEFAULT 0"),
+        ("group_settings", "welcome_text",     "TEXT"),
+        ("group_settings", "goodbye_text",     "TEXT"),
+        ("group_settings", "dlmode_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
+        ("group_settings", "aichat_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
+    ]
+
+    for table, col, definition in migrations:
+        rows = (await conn.execute(text(f"PRAGMA table_info({table})"))).fetchall()
+        existing = {r[1] for r in rows}
+        if col not in existing:
+            await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} {definition}"))
+            log.info("DB migration: added column", table=table, column=col)
+
+
 async def init_db(database_url: str) -> None:
     """Create engine, session factory, and all tables."""
     global _engine, _session_factory
@@ -140,6 +161,7 @@ async def init_db(database_url: str) -> None:
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await _migrate(conn)
     log.info("Database initialised", url=database_url)
 
 

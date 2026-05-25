@@ -105,7 +105,7 @@ def _run_ydl(url: str, out_path: str) -> Optional[dict]:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
         except Exception as e:
-            log.debug("yt-dlp attempt failed", error=str(e))
+            log.warning("yt-dlp attempt failed", error=str(e))
             continue
         candidates = sorted(
             Path(out_path).parent.glob(Path(out_path).stem + "*"),
@@ -128,7 +128,7 @@ def _run_ydl_info(url: str) -> Optional[dict]:
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
     except Exception as e:
-        log.debug("yt-dlp info failed", error=str(e))
+        log.warning("yt-dlp info failed", error=str(e))
         return None
 
 
@@ -186,11 +186,24 @@ async def _process_url(update: Update, context, url: str) -> None:
 
     try:
         await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
-        result = await loop.run_in_executor(None, _run_ydl, url, out_stem)
+        try:
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _run_ydl, url, out_stem),
+                timeout=180,
+            )
+        except asyncio.TimeoutError:
+            log.warning("yt-dlp download timed out", url=url)
+            result = None
 
         if result is None:
             # Try to at least get info for a fallback card
-            info = await loop.run_in_executor(None, _run_ydl_info, url)
+            try:
+                info = await asyncio.wait_for(
+                    loop.run_in_executor(None, _run_ydl_info, url),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                info = None
             if info:
                 caption = _build_caption(info, platform)
                 caption += "\n\n⚠️ <i>File exceeds 50 MB — link above.</i>"
