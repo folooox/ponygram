@@ -110,8 +110,14 @@ async def _process_url(update: Update, context, url: str) -> None:
             getattr(getattr(result, "platform", None), "display_name", "")
             or "Media"
         )
+        result_type = type(result).__name__
+        chat_action = (
+            ChatAction.UPLOAD_PHOTO
+            if "Image" in result_type or "RichText" in result_type
+            else ChatAction.UPLOAD_VIDEO
+        )
         status = await msg.reply_text(f"⏳ 解析中… ({platform_name})")
-        await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
+        await context.bot.send_chat_action(chat.id, chat_action)
 
         # Download files to temp dir
         files: list[Path] = []
@@ -173,7 +179,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             await status.delete()
             status = None
 
-        await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
+        await context.bot.send_chat_action(chat.id, chat_action)
 
         for i, fp in enumerate(sendable[:10]):
             ext = fp.suffix.lower()
