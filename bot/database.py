@@ -66,6 +66,7 @@ class GroupSettings(Base):
     antispam_max_msgs = Column(Integer, default=5)     # msgs per window
     antispam_window = Column(Integer, default=5)       # seconds
     antiad_enabled = Column(Boolean, default=False)
+    dlmode_enabled = Column(Boolean, default=False)    # auto media URL detection
 
 
 class Blacklist(Base):
