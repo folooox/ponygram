@@ -99,17 +99,25 @@ async def cmd_delcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @owner_only
 async def cmd_listcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all configured platform cookies."""
+    """List all configured platform cookies with health status."""
     msg = update.effective_message
     configs = await get_all_bot_configs()
     lines = ["<b>平台 Cookie 状态</b>\n"]
     for db_key, display in _DISPLAY.items():
         val = configs.get(db_key)
         if val:
+            status = configs.get(f"status_{db_key}", "")
+            if status == "valid":
+                icon = "🟢"
+            elif status == "expired":
+                icon = "🔴"
+            else:
+                icon = "✅"
             preview = val[:20] + "…" if len(val) > 20 else val
-            lines.append(f"✅ <b>{display}</b>  <code>{preview}</code>")
+            lines.append(f"{icon} <b>{display}</b>  <code>{preview}</code>")
         else:
             lines.append(f"⬜ <b>{display}</b>  未配置")
+    lines.append("\n🟢=已验证有效  🔴=已检测失效  ✅=配置但未检测")
     await msg.reply_text("\n".join(lines), parse_mode="HTML")
 
 
