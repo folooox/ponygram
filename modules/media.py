@@ -35,7 +35,44 @@ _TG_MAX_BYTES = 49 * 1024 * 1024
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
+# Quick pre-filter: only attempt parsing for these domains
+_KNOWN_DOMAINS = {
+    "youtube.com", "youtu.be",
+    "bilibili.com", "b23.tv",
+    "tiktok.com", "vm.tiktok.com",
+    "douyin.com",
+    "instagram.com",
+    "twitter.com", "x.com", "t.co",
+    "xiaohongshu.com", "xhslink.com",
+    "weibo.com", "weibo.cn",
+    "tieba.baidu.com",
+    "facebook.com", "fb.watch",
+    "threads.net",
+    "kuaishou.com",
+    "coolapk.com",
+    "pipix.com",
+    "zuiyou.com",
+    "xiaoheihe.cn",
+    "vimeo.com",
+    "twitch.tv",
+    "nicovideo.jp",
+}
+
+_AUTH_REQUIRED_PHRASES = ("login required", "401", "403", "unauthorized",
+                          "rate-limit", "rate limit", "please wait",
+                          "需要登录", "解析错误", "无法获取")
+
 _ph = None
+
+
+def _is_known_url(url: str) -> bool:
+    url_lower = url.lower()
+    return any(d in url_lower for d in _KNOWN_DOMAINS)
+
+
+def _is_auth_error(msg: str) -> bool:
+    m = msg.lower()
+    return any(p in m for p in _AUTH_REQUIRED_PHRASES)
 
 
 def _get_ph():
@@ -74,7 +111,6 @@ def _get_files(dr) -> list[Path]:
         p = getattr(m, "path", None)
         if p:
             paths.append(Path(p))
-        # LivePhotoFile carries a companion video
         vp = getattr(m, "video_path", None)
         if vp:
             paths.append(Path(vp))
@@ -86,24 +122,35 @@ def _get_files(dr) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 async def _process_url(update: Update, context, url: str) -> None:
-    from parsehub.errors import DownloadError, ParseError, UnknownPlatform
-
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
 
-    ph = _get_ph()
-    status = None
+    status = await msg.reply_text("⏳ 解析中…")
     tmp_dir = tempfile.mkdtemp(prefix="ponygram_")
 
     try:
-        # Parse metadata; UnknownPlatform means we silently ignore the URL
+        try:
+            from parsehub.errors import DownloadError, ParseError, UnknownPlatform
+            ph = _get_ph()
+        except Exception as e:
+            log.warning("ParseHub unavailable", error=str(e))
+            await status.delete()
+            return
+
+        # Parse metadata
         try:
             result = await asyncio.wait_for(ph.parse(url), timeout=30)
         except UnknownPlatform:
+            await status.delete()
             return
-        except (ParseError, asyncio.TimeoutError, Exception) as e:
-            log.warning("ParseHub parse failed", url=url, error=str(e))
+        except (Exception,) as e:
+            err = str(e)
+            log.warning("ParseHub parse failed", url=url, error=err)
+            if _is_auth_error(err):
+                await status.edit_text("❌ 该平台需要登录才能解析（未配置 Cookie）")
+            else:
+                await status.delete()
             return
 
         platform_name = (
@@ -116,7 +163,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             if "Image" in result_type or "RichText" in result_type
             else ChatAction.UPLOAD_VIDEO
         )
-        status = await msg.reply_text(f"⏳ 解析中… ({platform_name})")
+        await status.edit_text(f"⏳ 解析中… ({platform_name})")
         await context.bot.send_chat_action(chat.id, chat_action)
 
         # Download files to temp dir
@@ -265,6 +312,9 @@ async def on_message_url(update: Update, context) -> None:
         return
 
     url = match.group(0).rstrip(".,;:!?)'\"")
+    if not _is_known_url(url):
+        return  # skip random links silently
+
     await _process_url(update, context, url)
 
 
