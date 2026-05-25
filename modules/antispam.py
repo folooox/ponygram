@@ -4,14 +4,10 @@ Anti-spam and anti-ad module.
 Features
 --------
 - Rate limiting: mute users who send too many messages in a short window
-- Anti-ad: delete messages containing Telegram invite links or URLs from
-  non-admin users (configurable per group)
+- Anti-ad: delete messages containing Telegram invite links
 
-Admin commands
---------------
-/antispam on|off            — toggle rate limiting
-/antispam threshold <n> <s> — n messages per s seconds before mute
-/antiad on|off              — toggle anti-advertising filter
+Configuration is done via the Web Admin UI (/groups/<id>).
+Only active groups (is_active=True) are monitored.
 """
 
 from __future__ import annotations
@@ -24,12 +20,10 @@ from typing import Deque, Dict, Tuple
 from telegram import Update, ChatPermissions
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, MessageHandler, filters
 
-from bot.database import get_group_settings, set_group_field
+from bot.database import get_group_settings
 from bot.logger import get_logger
-from bot.permissions import admin_only, group_only
-from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -78,6 +72,8 @@ async def on_message(update: Update, context) -> None:
         return
 
     settings = await get_group_settings(chat.id)
+    if not settings.is_active:
+        return
 
     # ------------------------------------------------------------------ #
     # Anti-ad check                                                        #
@@ -130,73 +126,12 @@ async def on_message(update: Update, context) -> None:
         log.info("Anti-spam: muted flood user", user_id=user.id, chat_id=chat.id)
 
 
-# ---------------------------------------------------------------------------
-# Admin configuration commands
-# ---------------------------------------------------------------------------
-
-@group_only
-@admin_only
-async def cmd_antispam(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    args = context.args or []
-
-    if not args:
-        await msg.reply_text("Usage: /antispam on|off  OR  /antispam threshold <msgs> <secs>")
-        return
-
-    if args[0].lower() in ("on", "off"):
-        enabled = args[0].lower() == "on"
-        await set_group_field(chat.id, antispam_enabled=enabled)
-        await msg.reply_text(f"✅ Anti-spam {'enabled' if enabled else 'disabled'}.")
-        return
-
-    if args[0].lower() == "threshold" and len(args) == 3:
-        try:
-            n, s = int(args[1]), int(args[2])
-        except ValueError:
-            await msg.reply_text("Both values must be integers.")
-            return
-        n = max(1, min(n, 50))
-        s = max(1, min(s, 300))
-        await set_group_field(chat.id, antispam_max_msgs=n, antispam_window=s)
-        await msg.reply_text(f"✅ Threshold: {n} messages per {s} seconds.")
-        return
-
-    await msg.reply_text("Usage: /antispam on|off  OR  /antispam threshold <msgs> <secs>")
-
-
-@group_only
-@admin_only
-async def cmd_antiad(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    if not context.args or context.args[0].lower() not in ("on", "off"):
-        await msg.reply_text("Usage: /antiad on|off")
-        return
-    enabled = context.args[0].lower() == "on"
-    await set_group_field(chat.id, antiad_enabled=enabled)
-    await msg.reply_text(f"✅ Anti-advertising {'enabled' if enabled else 'disabled'}.")
-
-
 def setup(application: Application) -> None:
-    # Listen to all group text messages
     application.add_handler(
         MessageHandler(
             filters.TEXT & filters.ChatType.GROUPS & ~filters.COMMAND,
             on_message,
         ),
-        group=10,  # run at lower priority than command handlers
+        group=10,
     )
-
-    cmds = [
-        ("antispam", cmd_antispam, "Configure anti-spam (on/off/threshold)", True),
-        ("antiad",   cmd_antiad,   "Toggle anti-advertising filter",          True),
-    ]
-    for name, handler, desc, admin in cmds:
-        registry.register_command(name, handler, desc, admin_only=admin)
-        application.add_handler(CommandHandler(name, handler))
-
     log.info("antispam module loaded")

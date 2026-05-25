@@ -6,8 +6,8 @@ Features
 - Configurable welcome message per group (supports {name}, {username}, {chat} placeholders)
 - Goodbye message on member leave
 - Join verification: new member must click a button within a timeout or get kicked
-- Admin commands: /setwelcome, /delwelcome, /setgoodbye, /delgoodbye,
-                  /verification on|off, /verificationtimeout <seconds>
+
+Configuration is done via the Web Admin UI (/groups/<id>).
 """
 
 from __future__ import annotations
@@ -27,13 +27,10 @@ from telegram.ext import (
     Application,
     CallbackQueryHandler,
     ChatMemberHandler,
-    CommandHandler,
 )
 
-from bot.database import get_group_settings, set_group_field, upsert_user
+from bot.database import get_group_settings, upsert_user
 from bot.logger import get_logger
-from bot.permissions import admin_only, group_only
-from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -89,6 +86,8 @@ async def on_chat_member(update: Update, context) -> None:
 
     await upsert_user(user)
     settings = await get_group_settings(chat.id)
+    if not settings.is_active:
+        return
 
     # ---- Member joined ----
     just_joined = (
@@ -197,103 +196,7 @@ async def on_verify_button(update: Update, context) -> None:
     log.info("User verified", user_id=user_id, chat_id=chat_id)
 
 
-# ---------------------------------------------------------------------------
-# Admin configuration commands
-# ---------------------------------------------------------------------------
-
-@group_only
-@admin_only
-async def cmd_setwelcome(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    if not context.args:
-        await msg.reply_text(
-            "Usage: /setwelcome <text>\n"
-            "Placeholders: {name} {username} {chat} {id}"
-        )
-        return
-    text = " ".join(context.args)
-    await set_group_field(chat.id, welcome_text=text, welcome_enabled=True)
-    await msg.reply_text("✅ Welcome message updated.")
-
-
-@group_only
-@admin_only
-async def cmd_delwelcome(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    await set_group_field(chat.id, welcome_text=None, welcome_enabled=False)
-    await msg.reply_text("✅ Welcome message disabled.")
-
-
-@group_only
-@admin_only
-async def cmd_setgoodbye(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    if not context.args:
-        await msg.reply_text("Usage: /setgoodbye <text>")
-        return
-    text = " ".join(context.args)
-    await set_group_field(chat.id, goodbye_text=text, goodbye_enabled=True)
-    await msg.reply_text("✅ Goodbye message updated.")
-
-
-@group_only
-@admin_only
-async def cmd_delgoodbye(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    await set_group_field(chat.id, goodbye_text=None, goodbye_enabled=False)
-    await msg.reply_text("✅ Goodbye message disabled.")
-
-
-@group_only
-@admin_only
-async def cmd_verification(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    if not context.args or context.args[0].lower() not in ("on", "off"):
-        await msg.reply_text("Usage: /verification on|off")
-        return
-    enabled = context.args[0].lower() == "on"
-    await set_group_field(chat.id, verification_enabled=enabled)
-    state = "enabled" if enabled else "disabled"
-    await msg.reply_text(f"✅ Join verification {state}.")
-
-
-@group_only
-@admin_only
-async def cmd_vertimeout(update: Update, context) -> None:
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-    if not context.args or not context.args[0].isdigit():
-        await msg.reply_text("Usage: /verificationtimeout <seconds>")
-        return
-    secs = max(10, min(int(context.args[0]), 600))
-    await set_group_field(chat.id, verification_timeout=secs)
-    await msg.reply_text(f"✅ Verification timeout set to {secs} seconds.")
-
-
 def setup(application: Application) -> None:
     application.add_handler(ChatMemberHandler(on_chat_member, ChatMemberHandler.CHAT_MEMBER))
     application.add_handler(CallbackQueryHandler(on_verify_button, pattern=r"^verify:"))
-
-    cmds = [
-        ("setwelcome",           cmd_setwelcome,  "Set welcome message",              True),
-        ("delwelcome",           cmd_delwelcome,  "Disable welcome message",          True),
-        ("setgoodbye",           cmd_setgoodbye,  "Set goodbye message",              True),
-        ("delgoodbye",           cmd_delgoodbye,  "Disable goodbye message",          True),
-        ("verification",         cmd_verification,"Toggle join verification on/off",  True),
-        ("verificationtimeout",  cmd_vertimeout,  "Set verification timeout (secs)",  True),
-    ]
-    for name, handler, desc, admin in cmds:
-        registry.register_command(name, handler, desc, admin_only=admin)
-        application.add_handler(CommandHandler(name, handler))
     log.info("welcome module loaded")

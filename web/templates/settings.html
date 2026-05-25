@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Settings — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="fw-bold mb-0">Bot Settings</h4>
+</div>
+
+{% if saved %}
+<div class="alert alert-success py-2 small d-flex align-items-center gap-2 mb-4">
+  <i class="bi bi-check-circle-fill"></i> Settings saved.
+</div>
+{% endif %}
+
+<form method="post" action="/settings">
+  <div class="card" style="background:#1e2130;border-radius:.75rem">
+    <div class="card-body">
+      <h6 class="fw-semibold mb-3 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+        API Keys
+      </h6>
+      <p class="text-secondary small mb-4">
+        Enter keys to save them to the database. Leave blank to keep the current value.
+        Keys set here override environment variables.
+      </p>
+
+      <div class="mb-4">
+        <label class="form-label">
+          <i class="bi bi-robot text-secondary me-1"></i>
+          <strong>Claude API Key</strong>
+          <span class="text-secondary small ms-2">(for AI dialogue)</span>
+        </label>
+        <input type="password" class="form-control bg-dark border-secondary text-light"
+               name="claude_api_key"
+               placeholder="{% if configs.get('claude_api_key') %}••••••••••••••••{% else %}sk-ant-…{% endif %}">
+        {% if configs.get('claude_api_key') %}
+        <div class="form-text text-success small mt-1"><i class="bi bi-check-circle me-1"></i>Key is set</div>
+        {% else %}
+        <div class="form-text text-secondary small mt-1">Not configured</div>
+        {% endif %}
+      </div>
+
+      <div class="mb-4">
+        <label class="form-label">
+          <i class="bi bi-film text-secondary me-1"></i>
+          <strong>TMDB API Key</strong>
+          <span class="text-secondary small ms-2">(for movie/TV inline search)</span>
+        </label>
+        <input type="password" class="form-control bg-dark border-secondary text-light"
+               name="tmdb_api_key"
+               placeholder="{% if configs.get('tmdb_api_key') %}••••••••••••••••{% else %}your TMDB key{% endif %}">
+        {% if configs.get('tmdb_api_key') %}
+        <div class="form-text text-success small mt-1"><i class="bi bi-check-circle me-1"></i>Key is set</div>
+        {% else %}
+        <div class="form-text text-secondary small mt-1">Not configured</div>
+        {% endif %}
+      </div>
+
+      <div class="mb-2">
+        <label class="form-label">
+          <i class="bi bi-music-note text-secondary me-1"></i>
+          <strong>Last.fm API Key</strong>
+          <span class="text-secondary small ms-2">(for music inline search)</span>
+        </label>
+        <input type="password" class="form-control bg-dark border-secondary text-light"
+               name="lastfm_api_key"
+               placeholder="{% if configs.get('lastfm_api_key') %}••••••••••••••••{% else %}your Last.fm key{% endif %}">
+        {% if configs.get('lastfm_api_key') %}
+        <div class="form-text text-success small mt-1"><i class="bi bi-check-circle me-1"></i>Key is set</div>
+        {% else %}
+        <div class="form-text text-secondary small mt-1">Not configured</div>
+        {% endif %}
+      </div>
+
+    </div>
+  </div>
+
+  <div class="mt-4">
+    <button type="submit" class="btn btn-primary">
+      <i class="bi bi-floppy me-1"></i> Save
+    </button>
+  </div>
+</form>
+{% endblock %}

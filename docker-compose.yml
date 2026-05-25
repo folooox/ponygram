@@ -6,6 +6,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
-    # Uncomment the ports block when using webhook mode (set WEBHOOK_URL in .env)
-    # ports:
-    #   - "8443:8443"
+    ports:
+      # Web admin UI (set WEB_ENABLED=true in .env to activate)
+      - "8080:8080"
+      # Uncomment for webhook mode (set WEBHOOK_URL in .env)
+      # - "8443:8443"

@@ -40,6 +40,12 @@ class Config:
     lastfm_api_key: str
     claude_api_key: str
 
+    # Web admin UI
+    web_enabled: bool
+    web_host: str
+    web_port: int
+    web_secret: str
+
     def is_owner(self, user_id: int) -> bool:
         """Return True if *user_id* is the bot owner."""
         return user_id == self.owner_id
@@ -128,6 +134,15 @@ def load_config(env_file: Optional[str] = None) -> Config:
     except ValueError:
         raise ValueError(f"WEBHOOK_PORT must be an integer, got: {raw_port!r}")
 
+    web_enabled = os.getenv("WEB_ENABLED", "false").lower() in ("true", "1", "yes")
+    web_host = os.getenv("WEB_HOST", "0.0.0.0").strip()
+    raw_web_port = os.getenv("WEB_PORT", "8080").strip()
+    try:
+        web_port = int(raw_web_port)
+    except ValueError:
+        raise ValueError(f"WEB_PORT must be an integer, got: {raw_web_port!r}")
+    web_secret = os.getenv("WEB_SECRET", "").strip()
+
     return Config(
         bot_token=bot_token,
         owner_id=owner_id,
@@ -140,4 +155,8 @@ def load_config(env_file: Optional[str] = None) -> Config:
         tmdb_api_key=os.getenv("TMDB_API_KEY", "").strip(),
         lastfm_api_key=os.getenv("LASTFM_API_KEY", "").strip(),
         claude_api_key=os.getenv("CLAUDE_API_KEY", "").strip(),
+        web_enabled=web_enabled,
+        web_host=web_host,
+        web_port=web_port,
+        web_secret=web_secret,
     )
