@@ -19,6 +19,7 @@ from telegram import Bot
 from telegram.ext import Application, ApplicationBuilder
 
 from bot.config import load_config
+from bot.database import init_db
 from bot.error_handler import error_handler
 from bot.logger import get_logger, setup_logging
 from bot.plugin_loader import PluginLoader
@@ -46,6 +47,9 @@ async def main() -> None:
     log = get_logger(__name__)
 
     log.info("Starting ponygram", log_level=cfg.log_level, webhook=cfg.use_webhook)
+
+    # Initialise database
+    await init_db(cfg.database_url)
 
     app: Application = (
         ApplicationBuilder()
