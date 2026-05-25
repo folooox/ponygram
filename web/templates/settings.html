@@ -57,10 +57,20 @@
       <h6 class="fw-semibold mb-1 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
         平台 Cookie（媒体解析）
       </h6>
-      <p class="text-secondary small mb-4">
-        部分平台（Instagram、Twitter/X 等）需要登录 Cookie 才能解析私有或受限内容。
-        粘贴对应平台的 Cookie 字符串（<code>key=value; key2=value2</code> 格式），留空则不更新。
+      <p class="text-secondary small mb-3">
+        部分平台（Instagram、Twitter/X 等）需要登录 Cookie 才能解析受限内容。
+        Cookie 失效时 bot 会自动通知 Owner，并可用 <code>/setcookie</code> 命令在 Telegram 里直接更新。
       </p>
+      <div class="alert py-2 mb-4" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.82rem">
+        <div class="fw-semibold mb-1" style="color:#7eb8f7"><i class="bi bi-info-circle me-1"></i>如何获取 Cookie</div>
+        <ol class="mb-1 ps-3" style="color:#adb5bd">
+          <li>浏览器安装 <a href="https://cookie-editor.com/" target="_blank" class="text-info">Cookie-Editor</a> 插件</li>
+          <li>登录对应平台网页版</li>
+          <li>点击插件图标 → 选择 <strong>Export → Header String</strong></li>
+          <li>复制内容粘贴到下方输入框，或发送 <code>/setcookie &lt;平台&gt; &lt;内容&gt;</code> 给 bot</li>
+        </ol>
+        <div style="color:#6c757d">Cookie 会存储在数据库中，失效时 bot 自动通知 Owner</div>
+      </div>
 
       {% set platforms = [
         ("cookie_instagram",    "Instagram",   "instagram.com"),
