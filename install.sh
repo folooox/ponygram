@@ -25,8 +25,8 @@ if [[ ! -t 0 ]]; then
         exit 1
     fi
     chmod +x "$TMP"
-    # Re-exec; bash opens TMP as a file so stdin remains the terminal
-    exec bash "$TMP" "$@"
+    # Re-exec with stdin explicitly from /dev/tty so interactive read() works
+    exec bash "$TMP" "$@" </dev/tty
 fi
 
 # ── Colours ─────────────────────────────────────────────────
