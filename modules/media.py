@@ -62,6 +62,24 @@ _AUTH_REQUIRED_PHRASES = ("login required", "401", "403", "unauthorized",
                           "rate-limit", "rate limit", "please wait",
                           "需要登录", "解析错误", "无法获取")
 
+# Maps URL domain substring → BotConfig cookie key
+_DOMAIN_COOKIE_KEY: dict[str, str] = {
+    "instagram.com":   "cookie_instagram",
+    "twitter.com":     "cookie_twitter",
+    "x.com":           "cookie_twitter",
+    "t.co":            "cookie_twitter",
+    "bilibili.com":    "cookie_bilibili",
+    "b23.tv":          "cookie_bilibili",
+    "douyin.com":      "cookie_douyin",
+    "tiktok.com":      "cookie_tiktok",
+    "vm.tiktok.com":   "cookie_tiktok",
+    "kuaishou.com":    "cookie_kuaishou",
+    "xiaohongshu.com": "cookie_xiaohongshu",
+    "xhslink.com":     "cookie_xiaohongshu",
+    "youtube.com":     "cookie_youtube",
+    "youtu.be":        "cookie_youtube",
+}
+
 _ph = None
 
 
@@ -81,6 +99,16 @@ def _get_ph():
         from parsehub import ParseHub
         _ph = ParseHub()
     return _ph
+
+
+async def _get_cookie(url: str) -> Optional[str]:
+    """Return the stored cookie for the URL's platform, or None."""
+    from bot.database import get_bot_config
+    url_lower = url.lower()
+    for domain, key in _DOMAIN_COOKIE_KEY.items():
+        if domain in url_lower:
+            return await get_bot_config(key)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +166,15 @@ async def _process_url(update: Update, context, url: str) -> None:
             await status.delete()
             return
 
+        # Fetch stored cookie for this platform (may be None)
+        cookie = await _get_cookie(url)
+
         # Parse metadata
         try:
-            result = await asyncio.wait_for(ph.parse(url), timeout=30)
+            result = await asyncio.wait_for(
+                ph.parse(url, cookie=cookie) if cookie else ph.parse(url),
+                timeout=30,
+            )
         except UnknownPlatform:
             await status.delete()
             return
@@ -148,7 +182,9 @@ async def _process_url(update: Update, context, url: str) -> None:
             err = str(e)
             log.warning("ParseHub parse failed", url=url, error=err)
             if _is_auth_error(err):
-                await status.edit_text("❌ 该平台需要登录才能解析（未配置 Cookie）")
+                hint = "请在管理后台 Settings 页面配置该平台的 Cookie"
+                await status.edit_text(f"❌ 该平台需要登录才能解析\n<i>{hint}</i>",
+                                       parse_mode=ParseMode.HTML)
             else:
                 await status.delete()
             return
