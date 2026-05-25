@@ -74,11 +74,17 @@ def _trim_history(key: tuple[int, int]) -> None:
         _history[key] = h[-max_msgs:]
 
 
-async def _call_claude(messages: list[dict]) -> str:
-    """Call Claude with the given message history and return the full response text."""
+async def _stream_claude(messages: list[dict], status_msg) -> str:
+    """
+    Stream Claude's response, progressively editing status_msg every ~1.5 s.
+    Intermediate edits use plain text to avoid broken HTML mid-stream.
+    Returns the complete response text.
+    """
     client = _get_client()
-
     full_text = ""
+    last_edit_time = 0.0
+    EDIT_INTERVAL = 1.5  # seconds between live edits
+
     async with client.messages.stream(
         model="claude-opus-4-7",
         max_tokens=MAX_OUTPUT_TOKENS,
@@ -86,14 +92,21 @@ async def _call_claude(messages: list[dict]) -> str:
         messages=messages,
         thinking={"type": "adaptive"},
     ) as stream:
-        async for text in stream.text_stream:
-            full_text += text
+        async for chunk in stream.text_stream:
+            full_text += chunk
+            now = asyncio.get_event_loop().time()
+            if now - last_edit_time >= EDIT_INTERVAL and full_text.strip():
+                try:
+                    await status_msg.edit_text(full_text.rstrip() + " ✍️")
+                    last_edit_time = now
+                except TelegramError:
+                    pass
 
     return full_text.strip()
 
 
 async def _handle_ai_message(update: Update, context, user_text: str) -> None:
-    """Core: send user_text to Claude, stream response, update history."""
+    """Core: send user_text to Claude with live streaming, update history."""
     msg = update.effective_message
     user = update.effective_user
     chat = update.effective_chat
@@ -107,10 +120,10 @@ async def _handle_ai_message(update: Update, context, user_text: str) -> None:
     status = await msg.reply_text("💭 Thinking…")
 
     try:
-        response_text = await _call_claude(list(_history[key]))
+        response_text = await _stream_claude(list(_history[key]), status)
     except RuntimeError as e:
         await status.edit_text(f"❌ {e}")
-        _history[key].pop()  # remove the user message we just added
+        _history[key].pop()
         return
     except Exception as e:
         log.warning("Claude API error", error=str(e))
@@ -118,18 +131,20 @@ async def _handle_ai_message(update: Update, context, user_text: str) -> None:
         _history[key].pop()
         return
 
+    if not response_text:
+        await status.edit_text("❌ Received an empty response. Please try again.")
+        _history[key].pop()
+        return
+
     _history[key].append({"role": "assistant", "content": response_text})
 
-    # Telegram message limit is 4096 chars
-    if len(response_text) > 4000:
-        response_text = response_text[:3997] + "…"
+    final = response_text if len(response_text) <= 4000 else response_text[:3997] + "…"
 
     try:
-        await status.edit_text(response_text, parse_mode=ParseMode.HTML)
+        await status.edit_text(final, parse_mode=ParseMode.HTML)
     except TelegramError:
-        # Fall back to plain text if HTML parsing fails
         try:
-            await status.edit_text(response_text)
+            await status.edit_text(final)
         except TelegramError as e:
             log.warning("Failed to send Claude response", error=str(e))
 
@@ -209,7 +224,6 @@ async def on_mention(update: Update, context) -> None:
     """Reply with AI when the bot is @mentioned in a group chat."""
     msg = update.effective_message
     chat = update.effective_chat
-    bot_user = context.bot
 
     if not msg or not chat or not msg.text:
         return
@@ -218,22 +232,30 @@ async def on_mention(update: Update, context) -> None:
     if not getattr(settings, "aichat_enabled", False):
         return
 
-    # Check if the bot username is mentioned
-    bot_username = f"@{bot_user.username}" if bot_user.username else ""
+    bot_username = (context.bot.username or "").lower()
     if not bot_username:
         return
 
     text = msg.text
-    if bot_username.lower() not in text.lower():
+    user_text = text
+    found = False
+
+    for entity in (msg.entities or []):
+        if entity.type == "mention":
+            mentioned = text[entity.offset + 1 : entity.offset + entity.length].lower()
+            if mentioned == bot_username:
+                user_text = (text[: entity.offset] + text[entity.offset + entity.length :]).strip()
+                found = True
+                break
+
+    if not found:
         return
 
-    # Strip the mention and surrounding whitespace
-    user_text = text.replace(bot_username, "").replace(
-        bot_username.lower(), ""
-    ).strip()
-
     if not user_text:
-        await msg.reply_text("Yes? Send me a message using /chat <message> or just mention me with your question.")
+        await msg.reply_text(
+            "Yes? Ask me something — mention me with your question, "
+            "e.g. @BotName What is Python?"
+        )
         return
 
     await _handle_ai_message(update, context, user_text)

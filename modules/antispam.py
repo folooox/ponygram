@@ -33,9 +33,11 @@ from bot.router import registry
 
 log = get_logger(__name__)
 
-# Regex patterns for anti-ad detection
-_INVITE_RE = re.compile(r"t\.me/(?:joinchat/|\+)[A-Za-z0-9_-]+", re.IGNORECASE)
-_URL_RE = re.compile(r"https?://[^\s]+", re.IGNORECASE)
+# Anti-ad: block Telegram group invite links (t.me/joinchat/… or t.me/+…)
+_INVITE_RE = re.compile(
+    r"(?:https?://)?t\.me/(?:joinchat/|\+)[A-Za-z0-9_-]+",
+    re.IGNORECASE,
+)
 
 # In-memory rate-limit tracker: {chat_id: {user_id: deque of timestamps}}
 _msg_times: Dict[int, Dict[int, Deque[float]]] = defaultdict(lambda: defaultdict(deque))
@@ -81,7 +83,7 @@ async def on_message(update: Update, context) -> None:
     # Anti-ad check                                                        #
     # ------------------------------------------------------------------ #
     if settings.antiad_enabled and msg.text:
-        if _INVITE_RE.search(msg.text) or _URL_RE.search(msg.text):
+        if _INVITE_RE.search(msg.text):
             try:
                 await msg.delete()
                 await context.bot.send_message(

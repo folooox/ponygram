@@ -66,6 +66,7 @@ class GroupSettings(Base):
     antispam_max_msgs = Column(Integer, default=5)     # msgs per window
     antispam_window = Column(Integer, default=5)       # seconds
     antiad_enabled = Column(Boolean, default=False)
+    warn_limit = Column(Integer, default=3)
     dlmode_enabled = Column(Boolean, default=False)    # auto media URL detection
     aichat_enabled = Column(Boolean, default=False)    # AI auto-reply on @mention
 
@@ -77,6 +78,17 @@ class Blacklist(Base):
     reason = Column(Text, nullable=True)
     added_by = Column(BigInteger, nullable=True)
     added_at = Column(DateTime, default=datetime.utcnow)
+
+
+class UserWarn(Base):
+    __tablename__ = "user_warns"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id = Column(BigInteger, nullable=False, index=True)
+    user_id = Column(BigInteger, nullable=False, index=True)
+    reason = Column(Text, nullable=True)
+    warned_by = Column(BigInteger, nullable=True)
+    warned_at = Column(DateTime, default=datetime.utcnow)
 
 
 class RssFeed(Base):
@@ -302,3 +314,47 @@ async def prune_sent_history(feed_id: int, keep: int = 500) -> None:
         if old_ids:
             await s.execute(delete(RssSent).where(RssSent.id.in_(old_ids)))
             await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# Warn helpers
+# ---------------------------------------------------------------------------
+
+async def add_warn(chat_id: int, user_id: int, reason: str = "", warned_by: int = 0) -> int:
+    """Add a warning and return the new total count for this user in this chat."""
+    async with get_session() as s:
+        s.add(UserWarn(chat_id=chat_id, user_id=user_id, reason=reason or None, warned_by=warned_by))
+        await s.commit()
+    return await get_warn_count(chat_id, user_id)
+
+
+async def get_warn_count(chat_id: int, user_id: int) -> int:
+    async with get_session() as s:
+        result = await s.execute(
+            select(UserWarn).where(UserWarn.chat_id == chat_id, UserWarn.user_id == user_id)
+        )
+        return len(result.scalars().all())
+
+
+async def get_warns(chat_id: int, user_id: int) -> List[UserWarn]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(UserWarn)
+            .where(UserWarn.chat_id == chat_id, UserWarn.user_id == user_id)
+            .order_by(UserWarn.warned_at)
+        )
+        return list(result.scalars().all())
+
+
+async def clear_warns(chat_id: int, user_id: int) -> int:
+    """Remove all warnings for user in chat. Returns count removed."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(UserWarn).where(UserWarn.chat_id == chat_id, UserWarn.user_id == user_id)
+        )
+        rows = result.scalars().all()
+        count = len(rows)
+        for row in rows:
+            await s.delete(row)
+        await s.commit()
+        return count
