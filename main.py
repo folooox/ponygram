@@ -11,6 +11,7 @@ Supports both long-polling (default) and webhook mode (set WEBHOOK_URL in .env).
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
 import sys
 from pathlib import Path
@@ -57,8 +58,9 @@ async def main() -> None:
         .build()
     )
 
-    # Make config accessible to handlers via bot_data
+    # Make config and runtime settings accessible to handlers via bot_data
     app.bot_data["config"] = cfg
+    app.bot_data["rss_interval"] = int(os.environ.get("RSS_INTERVAL", "15"))
 
     # Register global error handler
     app.add_error_handler(error_handler)
