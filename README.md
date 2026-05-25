@@ -156,6 +156,52 @@ Copy `.env.example` to `.env` and fill in the values:
 | `CLAUDE_API_KEY` | — | For `/chat` and AI auto-reply |
 | `DL_MAX_MB` | — | Max upload size in MB (default 49) |
 
+## Deployment
+
+### Docker (recommended)
+
+```bash
+cp .env.example .env
+# fill in BOT_TOKEN and other keys
+
+docker compose up -d
+```
+
+Logs stream to `./logs/` and the database persists in `./data/`.
+
+For **webhook mode**, uncomment the `ports` section in `docker-compose.yml` and set `WEBHOOK_URL` in `.env`.
+
+### systemd (bare-metal)
+
+```bash
+# 1. Create a dedicated user
+sudo useradd -r -s /bin/false ponygram
+
+# 2. Install the bot
+sudo mkdir -p /opt/ponygram
+sudo cp -r . /opt/ponygram
+sudo chown -R ponygram:ponygram /opt/ponygram
+
+# 3. Create a virtualenv and install deps
+sudo -u ponygram python3 -m venv /opt/ponygram/.venv
+sudo -u ponygram /opt/ponygram/.venv/bin/pip install -r /opt/ponygram/requirements.txt
+
+# 4. Configure environment
+sudo cp /opt/ponygram/.env.example /opt/ponygram/.env
+sudo nano /opt/ponygram/.env   # set BOT_TOKEN etc.
+
+# 5. Install and start the service
+sudo cp deploy/ponygram.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now ponygram
+
+# Check status
+sudo systemctl status ponygram
+sudo journalctl -u ponygram -f
+```
+
+---
+
 ## Adding a Custom Plugin
 
 Create `plugins/my_feature.py` with a `setup(application)` function:
@@ -185,4 +231,4 @@ The plugin is picked up automatically on the next start — no changes to `main.
 | 5 | Media download via yt-dlp | ✅ Done |
 | 6 | AI dialogue via Claude | ✅ Done |
 | Polish | Warn system, pin/unpin, live streaming, bug fixes | ✅ Done |
-| 7 | Deployment (Docker, systemd) | Planned |
+| 7 | Deployment (Docker, systemd) | ✅ Done |
