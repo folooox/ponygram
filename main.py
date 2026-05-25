@@ -83,7 +83,7 @@ async def main() -> None:
             try:
                 import uvicorn
                 from web.app import create_web_app
-                web_app = create_web_app(secret=cfg.web_secret)
+                web_app = create_web_app(secret=cfg.web_secret, bot=app.bot)
                 uv_config = uvicorn.Config(
                     web_app,
                     host=cfg.web_host,

@@ -8,6 +8,7 @@ group_settings  — per-group configuration (welcome text, verification, etc.)
 blacklist       — banned user IDs (global)
 rss_feeds       — per-chat RSS subscriptions
 rss_sent        — deduplication log of pushed entries
+bot_config      — key-value store for bot-level settings (API keys, etc.)
 """
 
 from __future__ import annotations
@@ -56,6 +57,7 @@ class GroupSettings(Base):
     __tablename__ = "group_settings"
 
     chat_id = Column(BigInteger, primary_key=True)
+    is_active = Column(Boolean, default=False)         # must be activated by owner in Web UI
     welcome_enabled = Column(Boolean, default=True)
     welcome_text = Column(Text, nullable=True)         # None → use default
     goodbye_enabled = Column(Boolean, default=False)
@@ -67,8 +69,8 @@ class GroupSettings(Base):
     antispam_window = Column(Integer, default=5)       # seconds
     antiad_enabled = Column(Boolean, default=False)
     warn_limit = Column(Integer, default=3)
-    dlmode_enabled = Column(Boolean, default=False)    # auto media URL detection
-    aichat_enabled = Column(Boolean, default=False)    # AI auto-reply on @mention
+    dlmode_enabled = Column(Boolean, default=True)     # auto media URL detection (on by default)
+    aichat_enabled = Column(Boolean, default=True)     # AI auto-reply (on by default)
 
 
 class Blacklist(Base):
@@ -112,6 +114,15 @@ class RssSent(Base):
     feed_id = Column(Integer, nullable=False, index=True)
     entry_hash = Column(String(64), nullable=False)   # sha256 of guid or link
     sent_at = Column(DateTime, default=datetime.utcnow)
+
+
+class BotConfig(Base):
+    """Global bot configuration stored as key-value pairs."""
+    __tablename__ = "bot_config"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -358,3 +369,46 @@ async def clear_warns(chat_id: int, user_id: int) -> int:
             await s.delete(row)
         await s.commit()
         return count
+
+
+# ---------------------------------------------------------------------------
+# BotConfig helpers (global key-value settings)
+# ---------------------------------------------------------------------------
+
+async def get_bot_config(key: str) -> Optional[str]:
+    """Return the stored value for *key*, or None if not set."""
+    async with get_session() as s:
+        row = await s.get(BotConfig, key)
+        return row.value if row and row.value else None
+
+
+async def set_bot_config(key: str, value: str) -> None:
+    """Upsert a key-value pair in BotConfig."""
+    async with get_session() as s:
+        row = await s.get(BotConfig, key)
+        if row:
+            row.value = value
+            row.updated_at = datetime.utcnow()
+        else:
+            s.add(BotConfig(key=key, value=value))
+        await s.commit()
+
+
+async def get_all_bot_configs() -> dict[str, str]:
+    """Return all non-null BotConfig entries as a plain dict."""
+    async with get_session() as s:
+        result = await s.execute(select(BotConfig))
+        return {r.key: r.value for r in result.scalars().all() if r.value is not None}
+
+
+# ---------------------------------------------------------------------------
+# Admin RSS helper (all feeds across all chats)
+# ---------------------------------------------------------------------------
+
+async def get_all_rss_feeds() -> List[RssFeed]:
+    """Return every RSS feed ordered by chat_id then id."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(RssFeed).order_by(RssFeed.chat_id, RssFeed.id)
+        )
+        return list(result.scalars().all())

@@ -1,9 +1,7 @@
 """
 Book search module — powered by Google Books API.
 
-Commands:
-  /book <title or author or ISBN>
-
+Accessible via Telegram inline mode: @bot book <query>
 No API key required for basic usage (up to 1000 req/day per IP).
 Results cached 1 hour per query.
 """
@@ -15,11 +13,10 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler
 
 from bot.cache import book_cache
 from bot.logger import get_logger
-from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -86,64 +83,16 @@ def _format_book(item: Dict) -> str:
     return "\n".join(lines)
 
 
-async def cmd_book(update: Update, context) -> None:
-    msg = update.effective_message
-    assert msg
-
-    if not context.args:
-        await msg.reply_text("Usage: /book <title, author, or ISBN>")
-        return
-
-    query = " ".join(context.args)
+async def search_books(query: str) -> list:
+    """Search books and return up to 5 results; empty list on no results."""
     cache_key = f"book:{query.lower()}"
-
     cached = await book_cache.get(cache_key)
     if cached:
-        items = cached
-    else:
-        items = await _gbooks_search(query)
-        if items is None:
-            await msg.reply_text("⚠️ Could not reach Google Books. Please try again later.")
-            return
-        if not items:
-            await msg.reply_text(f"No books found for <b>{query}</b>.", parse_mode=ParseMode.HTML)
-            return
+        return cached
+    items = await _gbooks_search(query)
+    if items:
         await book_cache.set(cache_key, items)
-
-    top = items[0]
-    text = _format_book(top)
-
-    buttons = []
-    for i, item in enumerate(items[1:4], start=2):
-        info = item.get("volumeInfo", {})
-        title = info.get("title", "?")[:30]
-        year = info.get("publishedDate", "")[:4]
-        label = f"{i}. {title} ({year})" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{cache_key}:{i-1}"))
-
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
-    # Try to show thumbnail
-    thumbnail = (
-        top.get("volumeInfo", {})
-        .get("imageLinks", {})
-        .get("thumbnail", "")
-        .replace("http://", "https://")
-    )
-
-    if thumbnail:
-        try:
-            await msg.reply_photo(
-                photo=thumbnail,
-                caption=text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=keyboard,
-            )
-            return
-        except Exception:
-            pass  # fall back to text if image fails
-
-    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    return items or []
 
 
 async def on_book_button(update: Update, context) -> None:
@@ -178,7 +127,5 @@ async def on_book_button(update: Update, context) -> None:
 
 
 def setup(application: Application) -> None:
-    registry.register_command("book", cmd_book, "Search books (Google Books)")
-    application.add_handler(CommandHandler("book", cmd_book))
     application.add_handler(CallbackQueryHandler(on_book_button, pattern=r"^book:"))
     log.info("book module loaded")

@@ -1,11 +1,8 @@
 """
 Music search module — powered by Last.fm API.
 
-Commands:
-  /music <artist - track>   — search for a track
-  /artist <name>            — get artist info + top tracks
-
-Requires LASTFM_API_KEY in .env.
+Accessible via Telegram inline mode: @bot music <artist - track>  /  @bot artist <name>
+Requires LASTFM_API_KEY (env or Web Admin UI → Settings).
 Results cached 30 minutes per query.
 """
 
@@ -16,19 +13,22 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler
 
 from bot.cache import music_cache
+from bot.database import get_bot_config
 from bot.logger import get_logger
-from bot.router import registry
 
 log = get_logger(__name__)
 
 _LASTFM_BASE = "https://ws.audioscrobbler.com/2.0/"
 
 
-def _get_api_key(context) -> Optional[str]:
-    cfg = context.bot_data.get("config")
+async def _get_api_key(context) -> Optional[str]:
+    key = await get_bot_config("lastfm_api_key")
+    if key:
+        return key
+    cfg = context.bot_data.get("config") if context else None
     return getattr(cfg, "lastfm_api_key", None) if cfg else None
 
 
@@ -133,114 +133,50 @@ def _format_artist(artist: Dict, top_tracks: List[Dict]) -> str:
     return "\n".join(lines)
 
 
-async def cmd_music(update: Update, context) -> None:
-    """Search for a track. Format: /music <artist - track> or /music <track name>"""
-    msg = update.effective_message
-    assert msg
-
-    if not context.args:
-        await msg.reply_text(
-            "Usage: /music <track name>\n"
-            "Or:    /music <artist> - <track>"
-        )
-        return
-
-    api_key = _get_api_key(context)
+async def search_tracks(query: str, context) -> Optional[list]:
+    """Search tracks and return list, or None on API error."""
+    api_key = await _get_api_key(context)
     if not api_key:
-        await msg.reply_text(
-            "⚠️ Last.fm API key not configured. Set <code>LASTFM_API_KEY</code> in your .env file.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    raw = " ".join(context.args)
-    cache_key = f"track:{raw.lower()}"
-
+        return None
+    cache_key = f"track:{query.lower()}"
     cached = await music_cache.get(cache_key)
     if cached:
-        results = cached
-    else:
-        # Try to split artist - track
-        artist_q, track_q = "", raw
-        if " - " in raw:
-            parts = raw.split(" - ", 1)
-            artist_q, track_q = parts[0].strip(), parts[1].strip()
-
-        params = {"track": track_q, "limit": 5}
-        if artist_q:
-            params["artist"] = artist_q
-        data = await _lastfm("track.search", api_key, **params)
-        if not data:
-            await msg.reply_text("⚠️ Could not reach Last.fm. Please try again later.")
-            return
-        results = data.get("results", {}).get("trackmatches", {}).get("track", [])
-        if not results:
-            await msg.reply_text(f"No tracks found for <b>{raw}</b>.", parse_mode=ParseMode.HTML)
-            return
+        return cached
+    artist_q, track_q = "", query
+    if " - " in query:
+        parts = query.split(" - ", 1)
+        artist_q, track_q = parts[0].strip(), parts[1].strip()
+    params: dict = {"track": track_q, "limit": 5}
+    if artist_q:
+        params["artist"] = artist_q
+    data = await _lastfm("track.search", api_key, **params)
+    if not data:
+        return None
+    results = data.get("results", {}).get("trackmatches", {}).get("track", [])
+    if results:
         await music_cache.set(cache_key, results)
-
-    top = results[0]
-    # Fetch detailed info for the top result
-    detail_key = f"track_info:{top.get('artist','')}:{top.get('name','')}".lower()
-    detail = await music_cache.get(detail_key)
-    if not detail:
-        d = await _lastfm("track.getInfo", api_key,
-                          artist=top.get("artist", ""), track=top.get("name", ""))
-        detail = d.get("track", top) if d else top
-        await music_cache.set(detail_key, detail)
-
-    text = _format_track(detail)
-
-    buttons = []
-    for i, t in enumerate(results[1:4], start=2):
-        a = t.get("artist", "?")
-        n = t.get("name", "?")[:25]
-        buttons.append(InlineKeyboardButton(
-            f"{i}. {n} — {a[:15]}",
-            callback_data=f"music:track:{cache_key}:{i-1}",
-        ))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-                         disable_web_page_preview=True)
+    return results
 
 
-async def cmd_artist(update: Update, context) -> None:
-    msg = update.effective_message
-    assert msg
-
-    if not context.args:
-        await msg.reply_text("Usage: /artist <artist name>")
-        return
-
-    api_key = _get_api_key(context)
+async def search_artist(name: str, context) -> Optional[tuple]:
+    """Return (artist_dict, top_tracks) or None on error/not found."""
+    api_key = await _get_api_key(context)
     if not api_key:
-        await msg.reply_text(
-            "⚠️ Last.fm API key not configured. Set <code>LASTFM_API_KEY</code> in your .env file.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    name = " ".join(context.args)
+        return None
     cache_key = f"artist:{name.lower()}"
-
     cached = await music_cache.get(cache_key)
     if cached:
-        artist, top_tracks = cached
-    else:
-        artist_data = await _lastfm("artist.getInfo", api_key, artist=name)
-        top_data = await _lastfm("artist.getTopTracks", api_key, artist=name, limit=5)
-        if not artist_data:
-            await msg.reply_text("⚠️ Could not reach Last.fm. Please try again later.")
-            return
-        artist = artist_data.get("artist", {})
-        if not artist:
-            await msg.reply_text(f"Artist <b>{name}</b> not found.", parse_mode=ParseMode.HTML)
-            return
-        top_tracks = (top_data or {}).get("toptracks", {}).get("track", []) if top_data else []
-        await music_cache.set(cache_key, (artist, top_tracks))
-
-    text = _format_artist(artist, top_tracks)
-    await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        return cached
+    artist_data = await _lastfm("artist.getInfo", api_key, artist=name)
+    if not artist_data:
+        return None
+    artist = artist_data.get("artist", {})
+    if not artist:
+        return None
+    top_data = await _lastfm("artist.getTopTracks", api_key, artist=name, limit=5)
+    top_tracks = (top_data or {}).get("toptracks", {}).get("track", [])
+    await music_cache.set(cache_key, (artist, top_tracks))
+    return artist, top_tracks
 
 
 async def on_music_button(update: Update, context) -> None:
@@ -250,7 +186,7 @@ async def on_music_button(update: Update, context) -> None:
 
     _, kind, cache_key, idx_str = query.data.split(":", 3)
     idx = int(idx_str)
-    api_key = _get_api_key(context)
+    api_key = await _get_api_key(context)
 
     if kind == "track":
         results = await music_cache.get(cache_key)
@@ -280,9 +216,5 @@ async def on_music_button(update: Update, context) -> None:
 
 
 def setup(application: Application) -> None:
-    registry.register_command("music", cmd_music, "Search music tracks (Last.fm)")
-    registry.register_command("artist", cmd_artist, "Get artist info (Last.fm)")
-    application.add_handler(CommandHandler("music", cmd_music))
-    application.add_handler(CommandHandler("artist", cmd_artist))
     application.add_handler(CallbackQueryHandler(on_music_button, pattern=r"^music:"))
     log.info("music module loaded")

@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}RSS — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="fw-bold mb-0">RSS Subscriptions</h4>
+  <span class="badge bg-secondary ms-2">{{ feeds|length }}</span>
+</div>
+
+{% if msg == 'added' %}
+<div class="alert alert-success py-2 small d-flex align-items-center gap-2 mb-4">
+  <i class="bi bi-check-circle-fill"></i> Feed added.
+</div>
+{% elif msg == 'deleted' %}
+<div class="alert alert-warning py-2 small d-flex align-items-center gap-2 mb-4">
+  <i class="bi bi-trash-fill"></i> Feed deleted.
+</div>
+{% endif %}
+
+<!-- Add feed -->
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-3 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+      <i class="bi bi-plus-circle me-1"></i> Add Feed
+    </h6>
+    <form method="post" action="/rss/add">
+      <div class="row g-2">
+        <div class="col-md-3">
+          <input type="number" class="form-control bg-dark border-secondary text-light"
+                 name="chat_id" placeholder="Chat ID" required>
+        </div>
+        <div class="col-md-5">
+          <input type="url" class="form-control bg-dark border-secondary text-light"
+                 name="url" placeholder="https://example.com/feed.xml" required>
+        </div>
+        <div class="col-md-3">
+          <input type="text" class="form-control bg-dark border-secondary text-light"
+                 name="label" placeholder="Label (optional)">
+        </div>
+        <div class="col-md-1">
+          <button type="submit" class="btn btn-primary w-100">
+            <i class="bi bi-plus-lg"></i>
+          </button>
+        </div>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Feed list -->
+{% if not feeds %}
+<div class="text-secondary">No RSS feeds yet.</div>
+{% else %}
+<div class="card" style="background:#1e2130;border-radius:.75rem">
+  <div class="table-responsive">
+    <table class="table table-dark table-hover mb-0" style="background:transparent">
+      <thead>
+        <tr class="text-secondary small">
+          <th>ID</th>
+          <th>Chat</th>
+          <th>Label / URL</th>
+          <th>Status</th>
+          <th>Last fetched</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in feeds %}
+        <tr>
+          <td class="text-secondary">{{ f.id }}</td>
+          <td class="font-monospace">{{ f.chat_id }}</td>
+          <td>
+            <div class="small">{{ f.label or '' }}</div>
+            <div class="text-secondary" style="font-size:.75rem;word-break:break-all">{{ f.url[:80] }}{% if f.url|length > 80 %}…{% endif %}</div>
+          </td>
+          <td>
+            {% if f.paused %}
+            <span class="badge bg-secondary">paused</span>
+            {% else %}
+            <span class="badge bg-success">active</span>
+            {% endif %}
+          </td>
+          <td class="text-secondary small">
+            {{ f.last_fetched.strftime('%m-%d %H:%M') if f.last_fetched else 'never' }}
+          </td>
+          <td>
+            <div class="d-flex gap-1">
+              {% if f.paused %}
+              <form method="post" action="/rss/{{ f.id }}/resume">
+                <button class="btn btn-sm btn-outline-success" title="Resume">
+                  <i class="bi bi-play"></i>
+                </button>
+              </form>
+              {% else %}
+              <form method="post" action="/rss/{{ f.id }}/pause">
+                <button class="btn btn-sm btn-outline-secondary" title="Pause">
+                  <i class="bi bi-pause"></i>
+                </button>
+              </form>
+              {% endif %}
+              <form method="post" action="/rss/{{ f.id }}/delete"
+                    onsubmit="return confirm('Delete this feed?')">
+                <button class="btn btn-sm btn-outline-danger" title="Delete">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

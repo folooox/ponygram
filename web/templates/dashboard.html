@@ -20,6 +20,7 @@
       <div class="card-body">
         <div class="text-secondary small mb-1"><i class="bi bi-chat-left me-1"></i>Groups</div>
         <div class="fs-2 fw-bold">{{ group_count }}</div>
+        <div class="text-success small mt-1"><i class="bi bi-play-circle me-1"></i>{{ active_count }} active</div>
       </div>
     </div>
   </div>
@@ -34,8 +35,8 @@
   <div class="col-sm-6 col-lg-3">
     <div class="card stat-card h-100" style="background:#1e2130">
       <div class="card-body">
-        <div class="text-secondary small mb-1"><i class="bi bi-exclamation-triangle me-1"></i>Total Warns</div>
-        <div class="fs-2 fw-bold">{{ warn_count }}</div>
+        <div class="text-secondary small mb-1"><i class="bi bi-rss me-1"></i>RSS Feeds</div>
+        <div class="fs-2 fw-bold">{{ rss_count }}</div>
       </div>
     </div>
   </div>
@@ -48,10 +49,16 @@
         <h6 class="fw-semibold mb-3">Quick Actions</h6>
         <div class="d-grid gap-2">
           <a href="/groups" class="btn btn-outline-primary btn-sm">
-            <i class="bi bi-sliders me-1"></i> Manage Group Settings
+            <i class="bi bi-sliders me-1"></i> Manage Groups
+          </a>
+          <a href="/rss" class="btn btn-outline-info btn-sm">
+            <i class="bi bi-rss me-1"></i> Manage RSS Feeds
           </a>
           <a href="/blacklist" class="btn btn-outline-danger btn-sm">
             <i class="bi bi-slash-circle me-1"></i> Manage Blacklist
+          </a>
+          <a href="/settings" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-gear me-1"></i> Settings
           </a>
         </div>
       </div>
@@ -68,8 +75,12 @@
           <span class="badge bg-success">RSS</span>
           <span class="badge bg-success">Media</span>
           <span class="badge bg-success">AI Chat</span>
-          <span class="badge bg-success">Movies/Books/Music</span>
+          <span class="badge bg-success">Inline Search</span>
         </div>
+        <p class="text-secondary small mt-3 mb-0">
+          <i class="bi bi-info-circle me-1"></i>
+          Groups must be <b>activated</b> via Groups page before features work.
+        </p>
       </div>
     </div>
   </div>

@@ -1,23 +1,21 @@
 """
 Group administration commands.
 
-Commands (all require admin):
+Commands (all require Telegram group admin status):
 /mute   [duration] — restrict a user from sending messages
 /unmute            — lift a mute
 /kick              — remove a user from the group
 /ban               — ban a user permanently
 /unban             — lift a ban
-/warn   [reason]   — warn a user (auto-bans at warn_limit)
+/warn   [reason]   — warn a user (auto-bans at warn_limit, configurable via Web UI)
 /warns             — show warnings for a user
 /clearwarns        — remove all warnings for a user
-/warnlimit <n>     — set auto-ban threshold (default 3)
 /pin   [loud]      — pin the replied-to message
 /unpin             — unpin a message
-/gblacklist        — add user to global bot blacklist (owner only)
-/gunblacklist      — remove from global blacklist (owner only)
 
 All commands work by replying to a message or passing a user ID / @username.
 Duration for /mute: e.g. 1h, 30m, 2d  (default: indefinite)
+Blacklist and warn-limit are managed via the Web Admin UI.
 """
 
 from __future__ import annotations
@@ -32,17 +30,14 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler
 
 from bot.database import (
-    add_to_blacklist,
-    remove_from_blacklist,
     upsert_user,
     add_warn,
     get_warns,
     clear_warns,
     get_group_settings,
-    set_group_field,
 )
 from bot.logger import get_logger
-from bot.permissions import admin_only, group_only, owner_only
+from bot.permissions import admin_only, group_only
 from bot.router import registry
 
 log = get_logger(__name__)
@@ -217,48 +212,6 @@ async def cmd_unban(update: Update, context) -> None:
         await msg.reply_text(f"Failed to unban: {e}")
 
 
-@owner_only
-async def cmd_gblacklist(update: Update, context) -> None:
-    """Add a user to the global bot blacklist."""
-    msg = update.effective_message
-    assert msg
-
-    user_id, name = await _resolve_target(update, context)
-    if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
-        return
-
-    reason = " ".join(context.args) if context.args and not msg.reply_to_message else (
-        " ".join(context.args[1:]) if context.args else ""
-    )
-    actor = update.effective_user
-    await add_to_blacklist(user_id, reason=reason, added_by=actor.id if actor else 0)
-    await msg.reply_text(
-        f"⛔ `{user_id}` added to global blacklist.", parse_mode=ParseMode.MARKDOWN
-    )
-    log.info("User added to blacklist", user_id=user_id, reason=reason)
-
-
-@owner_only
-async def cmd_gunblacklist(update: Update, context) -> None:
-    """Remove a user from the global bot blacklist."""
-    msg = update.effective_message
-    assert msg
-
-    user_id, name = await _resolve_target(update, context)
-    if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
-        return
-
-    removed = await remove_from_blacklist(user_id)
-    if removed:
-        await msg.reply_text(
-            f"✅ `{user_id}` removed from global blacklist.", parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        await msg.reply_text(f"`{user_id}` was not in the blacklist.", parse_mode=ParseMode.MARKDOWN)
-
-
 # ---------------------------------------------------------------------------
 # Warn system
 # ---------------------------------------------------------------------------
@@ -357,25 +310,6 @@ async def cmd_clearwarns(update: Update, context) -> None:
     log.info("Warnings cleared", user_id=user_id, chat_id=chat.id, count=count)
 
 
-@group_only
-@admin_only
-async def cmd_warnlimit(update: Update, context) -> None:
-    """/warnlimit <n> — set max warnings before auto-ban (default 3)."""
-    msg = update.effective_message
-    chat = update.effective_chat
-    assert msg and chat
-
-    if not context.args or not context.args[0].isdigit():
-        settings = await get_group_settings(chat.id)
-        current = settings.warn_limit or 3
-        await msg.reply_text(f"Current warn limit: {current}. Usage: /warnlimit <number>")
-        return
-
-    n = max(1, min(int(context.args[0]), 20))
-    await set_group_field(chat.id, warn_limit=n)
-    await msg.reply_text(f"✅ Warn limit set to {n}.")
-
-
 # ---------------------------------------------------------------------------
 # Pin / unpin
 # ---------------------------------------------------------------------------
@@ -426,19 +360,16 @@ async def cmd_unpin(update: Update, context) -> None:
 
 def setup(application: Application) -> None:
     cmds = [
-        ("mute",         cmd_mute,        "Mute a user [duration: 1h/30m/2d]",        True),
-        ("unmute",       cmd_unmute,      "Unmute a user",                             True),
-        ("kick",         cmd_kick,        "Kick a user from the group",                True),
-        ("ban",          cmd_ban,         "Ban a user from the group",                 True),
-        ("unban",        cmd_unban,       "Unban a user",                              True),
-        ("warn",         cmd_warn,        "Warn a user (auto-ban at limit)",           True),
-        ("warns",        cmd_warns,       "Show warnings for a user",                  False),
-        ("clearwarns",   cmd_clearwarns,  "Clear all warnings for a user",             True),
-        ("warnlimit",    cmd_warnlimit,   "Set max warnings before auto-ban",          True),
-        ("pin",          cmd_pin,         "Pin a message [loud]",                      True),
-        ("unpin",        cmd_unpin,       "Unpin a message",                           True),
-        ("gblacklist",   cmd_gblacklist,  "Add user to global blacklist",              True),
-        ("gunblacklist", cmd_gunblacklist,"Remove user from global blacklist",         True),
+        ("mute",       cmd_mute,       "Mute a user [duration: 1h/30m/2d]",  True),
+        ("unmute",     cmd_unmute,     "Unmute a user",                       True),
+        ("kick",       cmd_kick,       "Kick a user from the group",          True),
+        ("ban",        cmd_ban,        "Ban a user from the group",           True),
+        ("unban",      cmd_unban,      "Unban a user",                        True),
+        ("warn",       cmd_warn,       "Warn a user (auto-ban at limit)",     True),
+        ("warns",      cmd_warns,      "Show warnings for a user",            False),
+        ("clearwarns", cmd_clearwarns, "Clear all warnings for a user",       True),
+        ("pin",        cmd_pin,        "Pin a message [loud]",                True),
+        ("unpin",      cmd_unpin,      "Unpin a message",                     True),
     ]
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)

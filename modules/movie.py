@@ -1,11 +1,8 @@
 """
 Movie & TV query module — powered by TMDB API.
 
-Commands:
-  /movie <title>   — search movies (top 3 results with inline buttons)
-  /tv <title>      — search TV shows
-
-Requires TMDB_API_KEY in .env.
+Accessible via Telegram inline mode: @bot movie <title>  /  @bot tv <title>
+Requires TMDB_API_KEY (env or Web Admin UI → Settings).
 Results cached for 1 hour per query string.
 """
 
@@ -14,13 +11,15 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import aiohttp
+from typing import Optional as _Optional
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler
 
 from bot.cache import movie_cache
+from bot.database import get_bot_config
 from bot.logger import get_logger
-from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -29,8 +28,11 @@ _IMG_BASE = "https://image.tmdb.org/t/p/w500"
 _TMDB_URL = "https://www.themoviedb.org"
 
 
-def _get_api_key(context) -> Optional[str]:
-    cfg = context.bot_data.get("config")
+async def _get_api_key(context) -> _Optional[str]:
+    key = await get_bot_config("tmdb_api_key")
+    if key:
+        return key
+    cfg = context.bot_data.get("config") if context else None
     return getattr(cfg, "tmdb_api_key", None) if cfg else None
 
 
@@ -76,69 +78,22 @@ def _format_movie(item: Dict, media_type: str = "movie") -> str:
     return "\n".join(lines)
 
 
-async def _search(update: Update, context, media_type: str) -> None:
-    msg = update.effective_message
-    assert msg
-
-    if not context.args:
-        label = "movie title" if media_type == "movie" else "TV show title"
-        await msg.reply_text(f"Usage: /{media_type if media_type=='movie' else 'tv'} <{label}>")
-        return
-
-    api_key = _get_api_key(context)
+async def search_tmdb(query: str, media_type: str, context) -> _Optional[list]:
+    """Search TMDB and return a list of up to 5 result dicts, or None on error."""
+    api_key = await _get_api_key(context)
     if not api_key:
-        await msg.reply_text(
-            "⚠️ TMDB API key not configured. Set <code>TMDB_API_KEY</code> in your .env file.",
-            parse_mode=ParseMode.HTML,
-        )
-        return
-
-    query = " ".join(context.args)
+        return None
     cache_key = f"{media_type}:{query.lower()}"
-
     cached = await movie_cache.get(cache_key)
     if cached:
-        results = cached
-    else:
-        endpoint = "/search/movie" if media_type == "movie" else "/search/tv"
-        data = await _tmdb_get(endpoint, api_key, query=query, language="zh-CN,en-US")
-        if not data or not data.get("results"):
-            await msg.reply_text(f"No results found for <b>{query}</b>.", parse_mode=ParseMode.HTML)
-            return
-        results = data["results"][:5]
-        await movie_cache.set(cache_key, results)
-
-    top = results[0]
-    text = _format_movie(top, media_type)
-
-    # Build "more results" inline keyboard if multiple hits
-    buttons = []
-    for i, item in enumerate(results[1:4], start=2):
-        title = (item.get("title") or item.get("name", "?"))[:30]
-        year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
-        label = f"{i}. {title} ({year})" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"tmdb:{media_type}:{cache_key}:{i-1}"))
-
-    poster = top.get("poster_path")
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
-    if poster:
-        await msg.reply_photo(
-            photo=f"{_IMG_BASE}{poster}",
-            caption=text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=keyboard,
-        )
-    else:
-        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-
-
-async def cmd_movie(update: Update, context) -> None:
-    await _search(update, context, "movie")
-
-
-async def cmd_tv(update: Update, context) -> None:
-    await _search(update, context, "tv")
+        return cached
+    endpoint = "/search/movie" if media_type == "movie" else "/search/tv"
+    data = await _tmdb_get(endpoint, api_key, query=query, language="zh-CN,en-US")
+    if not data or not data.get("results"):
+        return []
+    results = data["results"][:5]
+    await movie_cache.set(cache_key, results)
+    return results
 
 
 async def on_tmdb_button(update: Update, context) -> None:
@@ -174,9 +129,5 @@ async def on_tmdb_button(update: Update, context) -> None:
 
 
 def setup(application: Application) -> None:
-    registry.register_command("movie", cmd_movie, "Search movies (TMDB)")
-    registry.register_command("tv", cmd_tv, "Search TV shows (TMDB)")
-    application.add_handler(CommandHandler("movie", cmd_movie))
-    application.add_handler(CommandHandler("tv", cmd_tv))
     application.add_handler(CallbackQueryHandler(on_tmdb_button, pattern=r"^tmdb:"))
     log.info("movie module loaded")
