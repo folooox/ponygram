@@ -1,0 +1,7 @@
+python-telegram-bot[job-queue]==21.6
+python-dotenv==1.0.1
+aiohttp==3.10.5
+APScheduler==3.10.4
+SQLAlchemy==2.0.35
+aiosqlite==0.20.0
+structlog==24.4.0
