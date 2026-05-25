@@ -62,7 +62,6 @@ def _format(template: str, user, chat) -> str:
 
 async def _kick_unverified(app, chat_id: int, user_id: int, msg_id: int) -> None:
     """Called after verification timeout — kicks the user and deletes the prompt."""
-    await asyncio.sleep(0)  # yield so task can be cancelled before sleep
     try:
         await app.bot.ban_chat_member(chat_id, user_id)
         await app.bot.unban_chat_member(chat_id, user_id)

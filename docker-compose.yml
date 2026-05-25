@@ -1,0 +1,11 @@
+services:
+  ponygram:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    # Uncomment the ports block when using webhook mode (set WEBHOOK_URL in .env)
+    # ports:
+    #   - "8443:8443"
