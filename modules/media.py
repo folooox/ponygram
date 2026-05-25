@@ -111,6 +111,31 @@ async def _get_cookie(url: str) -> Optional[str]:
     return None
 
 
+async def _notify_cookie_expired(context, url: str) -> None:
+    """Send the owner a DM when a configured cookie stops working."""
+    try:
+        cfg = context.bot_data.get("config")
+        owner_id = getattr(cfg, "owner_id", None)
+        if not owner_id:
+            return
+        # Guess platform name from URL
+        url_lower = url.lower()
+        platform = next(
+            (d.split(".")[0].capitalize() for d in _DOMAIN_COOKIE_KEY if d in url_lower),
+            "某平台",
+        )
+        await context.bot.send_message(
+            owner_id,
+            f"⚠️ <b>{platform} Cookie 已失效</b>\n\n"
+            f"解析 <code>{url[:60]}</code> 时收到 401/403。\n\n"
+            f"请重新登录后更新 Cookie：\n"
+            f"<code>/setcookie {platform.lower()} &lt;新Cookie&gt;</code>",
+            parse_mode="HTML",
+        )
+        log.warning("Cookie expired, owner notified", platform=platform)
+    except Exception as e:
+        log.warning("Failed to notify owner of cookie expiry", error=str(e))
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -182,9 +207,20 @@ async def _process_url(update: Update, context, url: str) -> None:
             err = str(e)
             log.warning("ParseHub parse failed", url=url, error=err)
             if _is_auth_error(err):
-                hint = "请在管理后台 Settings 页面配置该平台的 Cookie"
-                await status.edit_text(f"❌ 该平台需要登录才能解析\n<i>{hint}</i>",
-                                       parse_mode=ParseMode.HTML)
+                if cookie:
+                    # Cookie was configured but is now invalid — notify owner
+                    await _notify_cookie_expired(context, url)
+                    await status.edit_text(
+                        "❌ Cookie 已失效，已通知管理员更新\n"
+                        "<i>使用 /setcookie 重新配置</i>",
+                        parse_mode=ParseMode.HTML,
+                    )
+                else:
+                    await status.edit_text(
+                        "❌ 该平台需要登录才能解析\n"
+                        "<i>使用 /setcookie 配置 Cookie，或在后台 Settings 页面填写</i>",
+                        parse_mode=ParseMode.HTML,
+                    )
             else:
                 await status.delete()
             return
