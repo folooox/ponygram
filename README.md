@@ -156,6 +156,38 @@ Copy `.env.example` to `.env` and fill in the values:
 | `CLAUDE_API_KEY` | — | For `/chat` and AI auto-reply |
 | `DL_MAX_MB` | — | Max upload size in MB (default 49) |
 
+## Web Admin UI
+
+A built-in configuration dashboard lets you manage group settings and the blacklist from a browser — no SSH required.
+
+**Enable it** by adding to `.env`:
+```env
+WEB_ENABLED=true
+WEB_SECRET=your-strong-password-here
+WEB_PORT=8080   # optional, default 8080
+```
+
+Then open `http://<server-ip>:8080` and log in with `WEB_SECRET`.
+
+### Pages
+
+| Page | Description |
+|---|---|
+| `/` | Dashboard — user, group, blacklist, and warn counts |
+| `/groups` | All groups with at-a-glance feature badges |
+| `/groups/<id>` | Edit all settings for one group (toggles + numeric thresholds) |
+| `/blacklist` | View, add, and remove global blacklist entries |
+
+### What you can configure per group
+
+**Module toggles (on/off):** Welcome messages · Goodbye messages · Join verification · Anti-spam · Anti-advertising · Media URL auto-detect · AI @mention reply
+
+**Numeric thresholds:** Verification timeout · Anti-spam rate limit (messages / window) · Warn auto-ban limit
+
+> **Security:** `WEB_SECRET` is hashed with HMAC-SHA256 into a signed session cookie. Never expose port 8080 publicly without a reverse proxy + TLS.
+
+---
+
 ## Deployment
 
 ### Docker (recommended)
@@ -232,3 +264,4 @@ The plugin is picked up automatically on the next start — no changes to `main.
 | 6 | AI dialogue via Claude | ✅ Done |
 | Polish | Warn system, pin/unpin, live streaming, bug fixes | ✅ Done |
 | 7 | Deployment (Docker, systemd) | ✅ Done |
+| 8 | Web admin UI (FastAPI + Bootstrap) | ✅ Done |

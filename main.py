@@ -74,6 +74,29 @@ async def main() -> None:
     # (modules may have already added their own handlers directly)
     setup_handlers(app)
 
+    # Start web admin UI (optional)
+    _web_server = None
+    if cfg.web_enabled:
+        if not cfg.web_secret:
+            log.warning("WEB_ENABLED=true but WEB_SECRET is not set — web UI disabled")
+        else:
+            try:
+                import uvicorn
+                from web.app import create_web_app
+                web_app = create_web_app(secret=cfg.web_secret)
+                uv_config = uvicorn.Config(
+                    web_app,
+                    host=cfg.web_host,
+                    port=cfg.web_port,
+                    log_level="warning",
+                    access_log=False,
+                )
+                _web_server = uvicorn.Server(uv_config)
+                asyncio.create_task(_web_server.serve())
+                log.info("Web admin UI started", host=cfg.web_host, port=cfg.web_port)
+            except ImportError:
+                log.warning("uvicorn not installed — web UI disabled. Run: pip install uvicorn[standard]")
+
     # Fetch bot info and print startup banner
     async with app:
         bot_info = await app.bot.get_me()

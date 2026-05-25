@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Blacklist — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="fw-bold mb-0">Blacklist</h4>
+  <span class="badge bg-secondary ms-2">{{ entries|length }}</span>
+</div>
+
+{% if msg == 'added' %}
+<div class="alert alert-success py-2 small">User added to blacklist.</div>
+{% elif msg == 'removed' %}
+<div class="alert alert-info py-2 small">User removed from blacklist.</div>
+{% endif %}
+
+<!-- Add form -->
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-3">Add User</h6>
+    <form method="post" action="/blacklist/add" class="row g-2 align-items-end">
+      <div class="col-auto">
+        <label class="form-label small text-secondary">User ID</label>
+        <input type="number" name="user_id" class="form-control form-control-sm bg-dark border-secondary text-light"
+               placeholder="123456789" required style="width:160px">
+      </div>
+      <div class="col">
+        <label class="form-label small text-secondary">Reason (optional)</label>
+        <input type="text" name="reason" class="form-control form-control-sm bg-dark border-secondary text-light"
+               placeholder="spam, abuse…">
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-danger">
+          <i class="bi bi-slash-circle me-1"></i> Blacklist
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Entries table -->
+{% if not entries %}
+<div class="text-secondary">Blacklist is empty.</div>
+{% else %}
+<div class="card" style="background:#1e2130;border-radius:.75rem">
+  <div class="table-responsive">
+    <table class="table table-dark table-hover mb-0" style="background:transparent">
+      <thead>
+        <tr class="text-secondary small">
+          <th>User ID</th>
+          <th>Reason</th>
+          <th>Added by</th>
+          <th>Added at</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in entries %}
+        <tr>
+          <td class="font-monospace">{{ e.user_id }}</td>
+          <td class="text-secondary">{{ e.reason or "—" }}</td>
+          <td class="font-monospace text-secondary">{{ e.added_by or "—" }}</td>
+          <td class="text-secondary small">{{ e.added_at.strftime("%Y-%m-%d %H:%M") if e.added_at else "—" }}</td>
+          <td>
+            <form method="post" action="/blacklist/{{ e.user_id }}/remove" class="d-inline">
+              <button type="submit" class="btn btn-sm btn-outline-danger"
+                      onclick="return confirm('Remove {{ e.user_id }} from blacklist?')">
+                <i class="bi bi-trash3"></i>
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

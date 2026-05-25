@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Group {{ g.chat_id }} — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-1">
+  <a href="/groups" class="text-secondary text-decoration-none me-2">
+    <i class="bi bi-arrow-left"></i>
+  </a>
+  <h4 class="fw-bold mb-0">Group Settings</h4>
+  <code class="ms-2 text-secondary small">{{ g.chat_id }}</code>
+</div>
+<p class="text-secondary small mb-4">
+  Use <code>/id</code> in the group to confirm this is the right chat.
+</p>
+
+{% if saved %}
+<div class="alert alert-success py-2 small d-flex align-items-center gap-2">
+  <i class="bi bi-check-circle-fill"></i> Settings saved.
+</div>
+{% endif %}
+
+<form method="post" action="/groups/{{ g.chat_id }}">
+  <div class="row g-4">
+
+    <!-- ── Left column: module toggles ─────────────────────────────── -->
+    <div class="col-lg-6">
+      <div class="card h-100" style="background:#1e2130;border-radius:.75rem">
+        <div class="card-body">
+          <h6 class="fw-semibold mb-3 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+            Module Toggles
+          </h6>
+
+          {% set toggles = [
+            ("welcome_enabled",      "bi-door-open",        "Welcome messages",      g.welcome_enabled),
+            ("goodbye_enabled",      "bi-door-closed",      "Goodbye messages",      g.goodbye_enabled),
+            ("verification_enabled", "bi-shield-check",     "Join verification",     g.verification_enabled),
+            ("antispam_enabled",     "bi-speedometer",      "Anti-spam",             g.antispam_enabled),
+            ("antiad_enabled",       "bi-megaphone-fill",   "Anti-advertising",      g.antiad_enabled),
+            ("dlmode_enabled",       "bi-download",         "Media URL auto-detect", g.dlmode_enabled),
+            ("aichat_enabled",       "bi-robot",            "AI @mention reply",     g.aichat_enabled),
+          ] %}
+
+          {% for field, icon, label, value in toggles %}
+          <div class="d-flex align-items-center justify-content-between py-2 border-bottom border-secondary border-opacity-25">
+            <label class="form-check-label d-flex align-items-center gap-2" for="{{ field }}">
+              <i class="bi {{ icon }} text-secondary"></i>
+              <span>{{ label }}</span>
+            </label>
+            <div class="form-check form-switch mb-0">
+              <input class="form-check-input" type="checkbox" role="switch"
+                     id="{{ field }}" name="{{ field }}"
+                     {% if value %}checked{% endif %}>
+            </div>
+          </div>
+          {% endfor %}
+
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Right column: numeric thresholds ─────────────────────────── -->
+    <div class="col-lg-6">
+      <div class="card h-100" style="background:#1e2130;border-radius:.75rem">
+        <div class="card-body">
+          <h6 class="fw-semibold mb-3 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+            Thresholds
+          </h6>
+
+          <div class="mb-3">
+            <label class="form-label small">
+              <i class="bi bi-clock text-secondary me-1"></i>
+              Verification timeout (seconds)
+              <span class="text-secondary">10–600</span>
+            </label>
+            <input type="number" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="verification_timeout" min="10" max="600"
+                   value="{{ g.verification_timeout }}">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label small">
+              <i class="bi bi-envelope text-secondary me-1"></i>
+              Anti-spam: max messages
+              <span class="text-secondary">1–50</span>
+            </label>
+            <input type="number" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="antispam_max_msgs" min="1" max="50"
+                   value="{{ g.antispam_max_msgs }}">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label small">
+              <i class="bi bi-hourglass-split text-secondary me-1"></i>
+              Anti-spam: time window (seconds)
+              <span class="text-secondary">1–300</span>
+            </label>
+            <input type="number" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="antispam_window" min="1" max="300"
+                   value="{{ g.antispam_window }}">
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label small">
+              <i class="bi bi-exclamation-triangle text-secondary me-1"></i>
+              Warn limit (auto-ban threshold)
+              <span class="text-secondary">1–20</span>
+            </label>
+            <input type="number" class="form-control form-control-sm bg-dark border-secondary text-light"
+                   name="warn_limit" min="1" max="20"
+                   value="{{ g.warn_limit }}">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="mt-4 d-flex gap-2">
+    <button type="submit" class="btn btn-primary">
+      <i class="bi bi-check2 me-1"></i> Save Changes
+    </button>
+    <a href="/groups" class="btn btn-outline-secondary">Cancel</a>
+  </div>
+</form>
+{% endblock %}
