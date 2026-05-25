@@ -416,6 +416,15 @@ async def set_bot_config(key: str, value: str) -> None:
         await s.commit()
 
 
+async def delete_bot_config(key: str) -> None:
+    """Delete a BotConfig entry if it exists."""
+    async with get_session() as s:
+        row = await s.get(BotConfig, key)
+        if row:
+            await s.delete(row)
+            await s.commit()
+
+
 async def get_all_bot_configs() -> dict[str, str]:
     """Return all non-null BotConfig entries as a plain dict."""
     async with get_session() as s:

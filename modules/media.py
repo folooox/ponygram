@@ -35,7 +35,62 @@ _TG_MAX_BYTES = 49 * 1024 * 1024
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
+# Quick pre-filter: only attempt parsing for these domains
+_KNOWN_DOMAINS = {
+    "youtube.com", "youtu.be",
+    "bilibili.com", "b23.tv",
+    "tiktok.com", "vm.tiktok.com",
+    "douyin.com",
+    "instagram.com",
+    "twitter.com", "x.com", "t.co",
+    "xiaohongshu.com", "xhslink.com",
+    "weibo.com", "weibo.cn",
+    "tieba.baidu.com",
+    "facebook.com", "fb.watch",
+    "threads.net",
+    "kuaishou.com",
+    "coolapk.com",
+    "pipix.com",
+    "zuiyou.com",
+    "xiaoheihe.cn",
+    "vimeo.com",
+    "twitch.tv",
+    "nicovideo.jp",
+}
+
+_AUTH_REQUIRED_PHRASES = ("login required", "401", "403", "unauthorized",
+                          "rate-limit", "rate limit", "please wait",
+                          "需要登录", "解析错误", "无法获取")
+
+# Maps URL domain substring → BotConfig cookie key
+_DOMAIN_COOKIE_KEY: dict[str, str] = {
+    "instagram.com":   "cookie_instagram",
+    "twitter.com":     "cookie_twitter",
+    "x.com":           "cookie_twitter",
+    "t.co":            "cookie_twitter",
+    "bilibili.com":    "cookie_bilibili",
+    "b23.tv":          "cookie_bilibili",
+    "douyin.com":      "cookie_douyin",
+    "tiktok.com":      "cookie_tiktok",
+    "vm.tiktok.com":   "cookie_tiktok",
+    "kuaishou.com":    "cookie_kuaishou",
+    "xiaohongshu.com": "cookie_xiaohongshu",
+    "xhslink.com":     "cookie_xiaohongshu",
+    "youtube.com":     "cookie_youtube",
+    "youtu.be":        "cookie_youtube",
+}
+
 _ph = None
+
+
+def _is_known_url(url: str) -> bool:
+    url_lower = url.lower()
+    return any(d in url_lower for d in _KNOWN_DOMAINS)
+
+
+def _is_auth_error(msg: str) -> bool:
+    m = msg.lower()
+    return any(p in m for p in _AUTH_REQUIRED_PHRASES)
 
 
 def _get_ph():
@@ -44,6 +99,16 @@ def _get_ph():
         from parsehub import ParseHub
         _ph = ParseHub()
     return _ph
+
+
+async def _get_cookie(url: str) -> Optional[str]:
+    """Return the stored cookie for the URL's platform, or None."""
+    from bot.database import get_bot_config
+    url_lower = url.lower()
+    for domain, key in _DOMAIN_COOKIE_KEY.items():
+        if domain in url_lower:
+            return await get_bot_config(key)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +139,6 @@ def _get_files(dr) -> list[Path]:
         p = getattr(m, "path", None)
         if p:
             paths.append(Path(p))
-        # LivePhotoFile carries a companion video
         vp = getattr(m, "video_path", None)
         if vp:
             paths.append(Path(vp))
@@ -86,32 +150,57 @@ def _get_files(dr) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 async def _process_url(update: Update, context, url: str) -> None:
-    from parsehub.errors import DownloadError, ParseError, UnknownPlatform
-
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
 
-    ph = _get_ph()
-    status = None
+    status = await msg.reply_text("⏳ 解析中…")
     tmp_dir = tempfile.mkdtemp(prefix="ponygram_")
 
     try:
-        # Parse metadata; UnknownPlatform means we silently ignore the URL
         try:
-            result = await asyncio.wait_for(ph.parse(url), timeout=30)
-        except UnknownPlatform:
+            from parsehub.errors import DownloadError, ParseError, UnknownPlatform
+            ph = _get_ph()
+        except Exception as e:
+            log.warning("ParseHub unavailable", error=str(e))
+            await status.delete()
             return
-        except (ParseError, asyncio.TimeoutError, Exception) as e:
-            log.warning("ParseHub parse failed", url=url, error=str(e))
+
+        # Fetch stored cookie for this platform (may be None)
+        cookie = await _get_cookie(url)
+
+        # Parse metadata
+        try:
+            result = await asyncio.wait_for(
+                ph.parse(url, cookie=cookie) if cookie else ph.parse(url),
+                timeout=30,
+            )
+        except UnknownPlatform:
+            await status.delete()
+            return
+        except (Exception,) as e:
+            err = str(e)
+            log.warning("ParseHub parse failed", url=url, error=err)
+            if _is_auth_error(err):
+                hint = "请在管理后台 Settings 页面配置该平台的 Cookie"
+                await status.edit_text(f"❌ 该平台需要登录才能解析\n<i>{hint}</i>",
+                                       parse_mode=ParseMode.HTML)
+            else:
+                await status.delete()
             return
 
         platform_name = (
             getattr(getattr(result, "platform", None), "display_name", "")
             or "Media"
         )
-        status = await msg.reply_text(f"⏳ 解析中… ({platform_name})")
-        await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
+        result_type = type(result).__name__
+        chat_action = (
+            ChatAction.UPLOAD_PHOTO
+            if "Image" in result_type or "RichText" in result_type
+            else ChatAction.UPLOAD_VIDEO
+        )
+        await status.edit_text(f"⏳ 解析中… ({platform_name})")
+        await context.bot.send_chat_action(chat.id, chat_action)
 
         # Download files to temp dir
         files: list[Path] = []
@@ -173,7 +262,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             await status.delete()
             status = None
 
-        await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
+        await context.bot.send_chat_action(chat.id, chat_action)
 
         for i, fp in enumerate(sendable[:10]):
             ext = fp.suffix.lower()
@@ -259,6 +348,9 @@ async def on_message_url(update: Update, context) -> None:
         return
 
     url = match.group(0).rstrip(".,;:!?)'\"")
+    if not _is_known_url(url):
+        return  # skip random links silently
+
     await _process_url(update, context, url)
 
 

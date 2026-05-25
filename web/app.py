@@ -415,11 +415,23 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         if not _authed(session):
             return _redirect_login()
 
+        from bot.database import delete_bot_config
         form = await request.form()
-        keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key"]
-        for key in keys:
+        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key"]
+        cookie_keys = [
+            "cookie_instagram", "cookie_twitter", "cookie_bilibili",
+            "cookie_douyin", "cookie_tiktok", "cookie_kuaishou",
+            "cookie_xiaohongshu", "cookie_youtube",
+        ]
+        for key in api_keys:
             val = form.get(key, "").strip()
             if val:
+                await set_bot_config(key, val)
+        for key in cookie_keys:
+            val = form.get(key, "").strip()
+            if val == "__CLEAR__":
+                await delete_bot_config(key)
+            elif val:
                 await set_bot_config(key, val)
 
         return RedirectResponse(url="/settings?saved=1", status_code=303)
