@@ -1,26 +1,26 @@
-"""
-PlayStation game query module.
+"""PlayStation game query module.
 
 Commands (private chat + active groups):
   /psn [psn_id]          — PSN user profile (trophy level, platinum count, recent games)
-  /psprice <title>       — PS Store price via PSPrices.com (CN + US)
+  /psprice <title>       — PS Store price via PSPrices.com (HK + US)
   /trophy <psn_id> <game>— Trophy progress for a specific game
-
-Inline:
-  @bot game <title>      — RAWG.io PS4/PS5 game search
-  @bot psn <psn_id>      — PSN user profile inline card
+  /game <title>          — RAWG.io PS4/PS5 game search + PSN HK price
 
 API keys stored in BotConfig:
   rawg_api_key  — RAWG.io free API key (rawg.io/apidocs)
   psn_npsso     — PSN NPSSO token (from ca.account.sony.com/api/v1/ssocookie cookie)
+  claude_api_key — used for Chinese→English game name translation
 """
 
 from __future__ import annotations
 
 import asyncio
 import html
+import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote as urlquote
 
 import aiohttp
 from telegram import Update
@@ -100,7 +100,6 @@ def _format_game(item: Dict) -> str:
         if pname and pname.startswith("PS"):
             ps_platforms.append(pname)
 
-    slug = item.get("slug", "")
     store_url = f"https://store.playstation.com/search/{'+'.join(name.split())}"
 
     lines = [f"🎮 <b>{name}</b>"]
@@ -134,7 +133,6 @@ async def _get_psn_token() -> Optional[str]:
     if not npsso:
         return None
 
-    # Check cached token
     token = await get_bot_config("psn_access_token")
     expiry_str = await get_bot_config("psn_token_expiry")
     if token and expiry_str:
@@ -144,15 +142,11 @@ async def _get_psn_token() -> Optional[str]:
         except ValueError:
             pass
 
-    # Exchange NPSSO for access token
     try:
         async with aiohttp.ClientSession() as s:
             async with s.post(
                 _PSN_AUTH_URL,
-                data={
-                    "grant_type": "sso_cookie",
-                    "npsso": npsso,
-                },
+                data={"grant_type": "sso_cookie", "npsso": npsso},
                 headers={
                     "Content-Type": "application/x-www-form-urlencoded",
                     "Cookie": f"npsso={npsso}",
@@ -202,12 +196,9 @@ async def get_psn_profile(psn_id: str) -> Optional[Dict[str, Any]]:
     if not token:
         return None
 
-    # Resolve account ID from online ID
-    profile_url = f"{_PSN_USER_BASE}/internal-users/me/profiles"
     target_url = f"{_PSN_USER_BASE}/profiles?fields=onlineId,accountId,personalDetailSharing&onlineId={psn_id}"
     profile_data = await _psn_get(target_url, token)
     if not profile_data:
-        # fallback: try to use "me" endpoint then search
         return None
 
     profiles = profile_data.get("profiles", [])
@@ -218,7 +209,6 @@ async def get_psn_profile(psn_id: str) -> Optional[Dict[str, Any]]:
     if not account_id:
         return None
 
-    # Trophy summary
     trophy_url = f"{_PSN_TROPHY_BASE}/users/{account_id}/trophySummary"
     recent_url = f"{_PSN_TROPHY_BASE}/users/{account_id}/recentlyPlayedTitles?limit=5"
 
@@ -280,31 +270,46 @@ async def get_user_game_trophies(account_id: str, np_comm_id: str, token: str) -
 # ---------------------------------------------------------------------------
 
 _PSPRICES_URL = "https://psprices.com/region-{region}/search/?q={query}&platform={platform}&show=games&dlc=show"
-_PSPRICES_API  = "https://psprices.com/region-{region}/api/v1/games?search={query}&platform={platform}&limit=3"
+_PSPRICES_API = "https://psprices.com/region-{region}/api/v1/games?q={query}&platform={platform}&limit=5"
+
+_PSPRICES_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9,zh-HK;q=0.8",
+}
 
 
-async def search_psprices(query: str, regions: Tuple[str, ...] = ("us", "cn")) -> Optional[List[Dict]]:
-    """Search PSPrices.com for game prices. Returns list of price entries."""
+async def search_psprices(query: str, regions: Tuple[str, ...] = ("hk", "us")) -> Optional[List[Dict]]:
+    """Search PSPrices.com for game prices. Returns list of price entries per region."""
     cache_key = f"price:{query.lower()}"
     cached = await price_cache.get(cache_key)
     if cached is not None:
         return cached
 
     results = []
+    encoded = urlquote(query)
+    headers = {**_PSPRICES_HEADERS, "Referer": f"https://psprices.com/region-hk/search/?q={encoded}"}
+
     try:
         async with aiohttp.ClientSession() as s:
             for region in regions:
-                url = _PSPRICES_API.format(region=region, query=query.replace(" ", "+"), platform="PS5")
+                url = _PSPRICES_API.format(region=region, query=encoded, platform="PS5")
                 try:
-                    async with s.get(url, timeout=aiohttp.ClientTimeout(total=8),
-                                     headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"}) as r:
-                        if r.status == 200:
-                            data = await r.json()
-                            games = data.get("games", data.get("data", []))
-                            if games:
-                                results.append({"region": region.upper(), "games": games[:2]})
-                except Exception:
-                    pass
+                    async with s.get(url, timeout=aiohttp.ClientTimeout(total=8), headers=headers) as r:
+                        text = await r.text()
+                        log.warning("PSPrices raw", region=region, status=r.status, preview=text[:300])
+                        if r.status != 200:
+                            continue
+                        try:
+                            data = json.loads(text)
+                        except json.JSONDecodeError:
+                            log.warning("PSPrices non-JSON", region=region, preview=text[:100])
+                            continue
+                        games = data.get("games") or data.get("data") or data.get("results") or []
+                        if games:
+                            results.append({"region": region.upper(), "games": games[:2]})
+                except Exception as e:
+                    log.warning("PSPrices region failed", region=region, error=str(e))
     except Exception as e:
         log.warning("PSPrices request failed", error=str(e))
 
@@ -318,23 +323,63 @@ def _format_price(results: List[Dict], query: str) -> str:
     lines = [f"💰 <b>PS Store 价格</b>：{html.escape(query)}\n"]
     for region_data in results:
         region = region_data["region"]
-        flag = "🇺🇸" if region == "US" else ("🇨🇳" if region == "CN" else f"[{region}]")
+        if region == "HK":
+            flag, currency = "🇭🇰", "HK$"
+        elif region == "US":
+            flag, currency = "🇺🇸", "US$"
+        elif region == "CN":
+            flag, currency = "🇨\ud83c\�\udd33", "¥"
+        else:
+            flag, currency = f"[{region}]", ""
         for game in region_data["games"][:1]:
             name = html.escape(str(game.get("name", game.get("title", "?")))[:50])
             price = game.get("price", game.get("currentPrice", "?"))
-            lowest = game.get("lowestPrice", game.get("lowestEver", {}).get("price"))
+            lowest = game.get("lowestPrice", (game.get("lowestEver") or {}).get("price"))
             if isinstance(price, (int, float)):
-                price = f"{price/100:.2f}" if price > 100 else str(price)
-            price_str = f"<b>{price}</b>" if price and price != "?" else "N/A"
-            lowest_str = f"  史低: {lowest}" if lowest else ""
+                price = f"{price/100:.2f}" if price > 100 else f"{price:.2f}"
+            price_str = f"<b>{currency}{price}</b>" if price and price != "?" else "N/A"
+            lowest_str = f"  史低: {currency}{lowest}" if lowest else ""
             lines.append(f"{flag} {name}: {price_str}{lowest_str}")
 
     if len(lines) == 1:
-        lines.append("未找到价格信息，请访问 <a href=\"https://psprices.com\">PSPrices.com</a> 查询")
+        lines.append("未找到价格信息")
 
-    psp_url = f"https://psprices.com/region-us/search/?q={'+'.join(query.split())}&platform=PS5&show=games"
-    lines.append(f'\n🔗 <a href="{psp_url}">PSPrices</a>')
+    psp_url = f"https://psprices.com/region-hk/search/?q={urlquote(query)}&platform=PS5&show=games"
+    lines.append(f'\n🔗 <a href="{psp_url}">PSPrices HK</a>')
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# CJK detection + Claude game name translation
+# ---------------------------------------------------------------------------
+
+def _has_cjk(text: str) -> bool:
+    """Return True if text contains Chinese, Japanese, or Korean characters."""
+    return bool(re.search(r'[一-鿿぀-ゟ゠-ヿ가-힯]', text))
+
+
+async def _translate_game_name(query: str) -> Optional[str]:
+    """Use Claude to translate a CJK game name to English."""
+    api_key = await get_bot_config("claude_api_key")
+    if not api_key:
+        return None
+    try:
+        import anthropic
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        msg = await asyncio.wait_for(
+            client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=30,
+                messages=[{"role": "user", "content":
+                    f"Reply with ONLY the official English title of this video game, nothing else: {query}"}],
+            ),
+            timeout=8,
+        )
+        name = msg.content[0].text.strip().strip('"').strip("'")
+        return name if name else None
+    except Exception as e:
+        log.warning("Game name translation failed", error=str(e))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +452,7 @@ async def cmd_psprice(update: Update, context) -> None:
     try:
         results = await asyncio.wait_for(search_psprices(query), timeout=15)
         if not results:
-            psp_url = f"https://psprices.com/region-us/search/?q={'+'.join(query.split())}&platform=PS5&show=games"
+            psp_url = f"https://psprices.com/region-hk/search/?q={urlquote(query)}&platform=PS5&show=games"
             await status.edit_text(
                 f"❌ 未找到 <b>{html.escape(query)}</b> 的价格数据。\n"
                 f'🔗 <a href="{psp_url}">在 PSPrices 手动查询</a>',
@@ -456,7 +501,6 @@ async def cmd_trophy(update: Update, context) -> None:
             await status.edit_text("❌ PSN 认证失败，请检查 NPSSO Token 是否有效。")
             return
 
-        # Resolve account ID via profile
         profile = await asyncio.wait_for(get_psn_profile(psn_id), timeout=10)
         if not profile:
             await status.edit_text(f"❌ 未找到 PSN 用户 <code>{html.escape(psn_id)}</code>。",
@@ -465,7 +509,6 @@ async def cmd_trophy(update: Update, context) -> None:
 
         account_id = profile["account_id"]
 
-        # Search user's game list for matching title
         url = f"{_PSN_TROPHY_BASE}/users/{account_id}/trophyTitles?limit=100"
         titles_data = await _psn_get(url, token)
         if not titles_data:
@@ -498,7 +541,6 @@ async def cmd_trophy(update: Update, context) -> None:
             f"🥉 {earned.get('bronze',0)}/{defined.get('bronze',0)}",
         ]
 
-        # Fetch individual trophies if np_comm_id is available
         if np_comm_id:
             user_trophies = await get_user_game_trophies(account_id, np_comm_id, token)
             if user_trophies:
@@ -520,6 +562,79 @@ async def cmd_trophy(update: Update, context) -> None:
                                 parse_mode=ParseMode.HTML)
 
 
+async def cmd_game(update: Update, context) -> None:
+    """/game <title> — 用 RAWG.io 搜索 PS4/PS5 游戏信息，附带 PSN HK 价格"""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    if not await _check_active(chat.id, chat.type):
+        return
+
+    query = " ".join(context.args or "").strip()
+    if not query:
+        await msg.reply_text(
+            "用法：<code>/game &lt;游戏名&gt;</code>\n"
+            "例如：<code>/game Elden Ring</code> 或 <code>/game 黑神话悟空</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    rawg_key = await get_bot_config("rawg_api_key")
+    if not rawg_key:
+        await msg.reply_text(
+            "❌ RAWG API Key 未配置，请在 Web Admin → Settings 中填写。\n"
+            "获取地址：rawg.io/apidocs",
+        )
+        return
+
+    status = await msg.reply_text(f"⏳ 正在搜索 {html.escape(query)}…")
+    try:
+        # Step 1: search RAWG
+        items = await asyncio.wait_for(search_games(query), timeout=10)
+
+        # Step 2: if no results and CJK input, translate and retry
+        if not items and _has_cjk(query):
+            await status.edit_text(f"⏳ 正在翻译游戏名称…")
+            en_name = await _translate_game_name(query)
+            if en_name and en_name.lower() != query.lower():
+                log.info("Game name translated", original=query, translated=en_name)
+                items = await asyncio.wait_for(search_games(en_name), timeout=10)
+                if items:
+                    query = en_name
+
+        if not items:
+            await status.edit_text(
+                f"❌ 未找到游戏：<b>{html.escape(query)}</b>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await status.edit_text(f"⏳ 正在查询价格…")
+
+        # Step 3: fetch price
+        price_res = None
+        try:
+            price_res = await asyncio.wait_for(search_psprices(query), timeout=12)
+        except Exception:
+            pass
+
+        game_text = _format_game(items[0])
+        if isinstance(price_res, list) and price_res:
+            game_text += "\n\n" + _format_price(price_res, items[0].get("name", query))
+
+        await status.edit_text(game_text, parse_mode=ParseMode.HTML)
+
+    except asyncio.TimeoutError:
+        await status.edit_text("❌ 查询超时，请稍后再试。")
+    except Exception as e:
+        log.warning("Game query failed", error=str(e))
+        await status.edit_text(
+            f"❌ 查询失败：<code>{html.escape(str(e)[:200])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Module setup
 # ---------------------------------------------------------------------------
@@ -529,6 +644,7 @@ def setup(application: Application) -> None:
         ("psn",      cmd_psn,      "查询 PSN 用户档案 [psn_id]",   False),
         ("psprice",  cmd_psprice,  "查询游戏 PS Store 价格",        False),
         ("trophy",   cmd_trophy,   "查询奖杯进度 <psn_id> <游戏>", False),
+        ("game",     cmd_game,     "搜索 PS4/PS5 游戏信息",         False),
     ]
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)
