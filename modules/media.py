@@ -58,9 +58,12 @@ _KNOWN_DOMAINS = {
     "nicovideo.jp",
 }
 
-_AUTH_REQUIRED_PHRASES = ("login required", "401", "403", "unauthorized",
-                          "rate-limit", "rate limit", "please wait",
-                          "需要登录", "解析错误", "无法获取")
+_AUTH_REQUIRED_PHRASES = (
+    "login required", "unauthorized",
+    "http 401", "http 403", "status 401", "status 403", "code 401", "code 403",
+    "rate-limit", "rate limit",
+    "需要登录", "请先登录",
+)
 
 # Maps URL domain substring → BotConfig cookie key
 _DOMAIN_COOKIE_KEY: dict[str, str] = {
@@ -111,28 +114,29 @@ async def _get_cookie(url: str) -> Optional[str]:
     return None
 
 
-async def _notify_cookie_expired(context, url: str) -> None:
+async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
     """Send the owner a DM when a configured cookie stops working."""
     try:
         cfg = context.bot_data.get("config")
         owner_id = getattr(cfg, "owner_id", None)
         if not owner_id:
             return
-        # Guess platform name from URL
         url_lower = url.lower()
         platform = next(
             (d.split(".")[0].capitalize() for d in _DOMAIN_COOKIE_KEY if d in url_lower),
             "某平台",
         )
+        err_block = f"\n原始错误：<code>{err[:200]}</code>\n" if err else ""
         await context.bot.send_message(
             owner_id,
-            f"⚠️ <b>{platform} Cookie 已失效</b>\n\n"
-            f"解析 <code>{url[:60]}</code> 时收到 401/403。\n\n"
-            f"请重新登录后更新 Cookie：\n"
-            f"<code>/setcookie {platform.lower()} &lt;新Cookie&gt;</code>",
+            f"⚠️ <b>{platform} Cookie 可能已失效</b>\n\n"
+            f"解析 <code>{url[:60]}</code> 时返回需要登录的错误。\n"
+            f"{err_block}\n"
+            f"建议先诊断：<code>/testcookie {platform.lower()}</code>\n"
+            f"确认后更新 Cookie：<code>/setcookie {platform.lower()} &lt;新Cookie&gt;</code>",
             parse_mode="HTML",
         )
-        log.warning("Cookie expired, owner notified", platform=platform)
+        log.warning("Cookie expired notification sent", platform=platform, err=err[:100])
     except Exception as e:
         log.warning("Failed to notify owner of cookie expiry", error=str(e))
 
@@ -205,24 +209,31 @@ async def _process_url(update: Update, context, url: str) -> None:
             return
         except (Exception,) as e:
             err = str(e)
-            log.warning("ParseHub parse failed", url=url, error=err)
+            err_type = type(e).__name__
+            log.warning("ParseHub parse failed", url=url, error=err, err_type=err_type)
             if _is_auth_error(err):
                 if cookie:
-                    # Cookie was configured but is now invalid — notify owner
-                    await _notify_cookie_expired(context, url)
+                    await _notify_cookie_expired(context, url, err)
                     await status.edit_text(
-                        "❌ Cookie 已失效，已通知管理员更新\n"
-                        "<i>使用 /setcookie 重新配置</i>",
+                        f"❌ 该平台 Cookie 似乎已失效\n\n"
+                        f"原始错误：<code>{err[:200]}</code>\n\n"
+                        f"<i>使用 /testcookie 诊断或 /setcookie 重新配置</i>",
                         parse_mode=ParseMode.HTML,
                     )
                 else:
                     await status.edit_text(
-                        "❌ 该平台需要登录才能解析\n"
-                        "<i>使用 /setcookie 配置 Cookie，或在后台 Settings 页面填写</i>",
+                        f"❌ 该平台需要登录才能解析\n\n"
+                        f"原始错误：<code>{err[:200]}</code>\n\n"
+                        f"<i>使用 /setcookie 配置 Cookie</i>",
                         parse_mode=ParseMode.HTML,
                     )
             else:
-                await status.delete()
+                # Non-auth error — show the actual error to the user so they can diagnose
+                await status.edit_text(
+                    f"❌ 解析失败（{err_type}）\n\n"
+                    f"<code>{err[:300]}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
             return
 
         platform_name = (
