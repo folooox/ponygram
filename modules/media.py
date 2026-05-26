@@ -15,9 +15,11 @@ Per-group dlmode_enabled toggle (default True) controls whether parsing runs.
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -58,9 +60,12 @@ _KNOWN_DOMAINS = {
     "nicovideo.jp",
 }
 
-_AUTH_REQUIRED_PHRASES = ("login required", "401", "403", "unauthorized",
-                          "rate-limit", "rate limit", "please wait",
-                          "需要登录", "解析错误", "无法获取")
+_AUTH_REQUIRED_PHRASES = (
+    "login required", "unauthorized",
+    "http 401", "http 403", "status 401", "status 403", "code 401", "code 403",
+    "rate-limit", "rate limit",
+    "需要登录", "请先登录",
+)
 
 # Maps URL domain substring → BotConfig cookie key
 _DOMAIN_COOKIE_KEY: dict[str, str] = {
@@ -81,6 +86,7 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 }
 
 _ph = None
+_ytparser_patched = False
 
 
 def _is_known_url(url: str) -> bool:
@@ -93,10 +99,45 @@ def _is_auth_error(msg: str) -> bool:
     return any(p in m for p in _AUTH_REQUIRED_PHRASES)
 
 
+def _patch_ytparser_proxy() -> None:
+    """Inject the SOCKS5 proxy into yt-dlp's YoutubeDL params inside ParseHub.
+
+    ParseHub's YtParser builds params without a proxy key, so yt-dlp ignores
+    HTTP_PROXY / HTTPS_PROXY env vars (it reads them only at init time).
+    We patch the params property here so every YoutubeDL() call gets the proxy.
+    """
+    global _ytparser_patched
+    if _ytparser_patched:
+        return
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("ALL_PROXY")
+    )
+    if not proxy:
+        return
+    try:
+        from parsehub.parsers.base.yt_dlp_parser import YtParser
+
+        _orig_fget = YtParser.params.fget
+
+        def _patched_fget(self):
+            p = _orig_fget(self)
+            p["proxy"] = proxy
+            return p
+
+        YtParser.params = property(_patched_fget)
+        _ytparser_patched = True
+        log.info("YtParser proxy patched", proxy=proxy)
+    except Exception as e:
+        log.warning("Failed to patch YtParser proxy", error=str(e))
+
+
 def _get_ph():
     global _ph
     if _ph is None:
         from parsehub import ParseHub
+        _patch_ytparser_proxy()
         _ph = ParseHub()
     return _ph
 
@@ -206,24 +247,34 @@ async def _process_url(update: Update, context, url: str) -> None:
             return
         except (Exception,) as e:
             err = str(e)
-            log.warning("ParseHub parse failed", url=url, error=err)
+            err_type = type(e).__name__
+            log.warning(
+                "ParseHub parse failed",
+                url=url, error=err, err_type=err_type,
+                traceback=traceback.format_exc(),
+            )
             if _is_auth_error(err):
                 if cookie:
-                    # Cookie was configured but is now invalid — notify owner
                     await _notify_cookie_expired(context, url)
                     await status.edit_text(
-                        "❌ Cookie 已失效，已通知管理员更新\n"
-                        "<i>使用 /setcookie 重新配置</i>",
+                        f"❌ 该平台 Cookie 似乎已失效\n\n"
+                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
+                        f"<i>使用 /testcookie 诊断或 /setcookie 重新配置</i>",
                         parse_mode=ParseMode.HTML,
                     )
                 else:
                     await status.edit_text(
-                        "❌ 该平台需要登录才能解析\n"
-                        "<i>使用 /setcookie 配置 Cookie，或在后台 Settings 页面填写</i>",
+                        f"❌ 该平台需要登录才能解析\n\n"
+                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
+                        f"<i>使用 /setcookie 配置 Cookie</i>",
                         parse_mode=ParseMode.HTML,
                     )
             else:
-                await status.delete()
+                await status.edit_text(
+                    f"❌ 解析失败（{html.escape(err_type)}）\n\n"
+                    f"<code>{html.escape(err[:300])}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
             return
 
         platform_name = (
