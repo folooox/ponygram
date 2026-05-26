@@ -1,23 +1,21 @@
 """
-Cookie health-check scheduler + Playwright credential-based auto-refresh.
+Cookie health-check scheduler + /testcookie diagnostic command.
 
 Scheduled job (every COOKIE_CHECK_INTERVAL hours, default 6):
-  1. For each stored cookie with a defined test, run a lightweight HTTP check.
-  2. If expired and credentials exist → auto-refresh via Playwright.
-  3. If expired and no credentials → notify owner.
+  - Lightweight HTTP test per platform.
+  - If expired: notify owner with update instructions.
+  - No Playwright auto-refresh (unreliable on server IPs due to platform
+    cookie-binding to login IP; selector breakage on page redesigns).
 
 Commands (owner only):
-  /setcredentials <platform> <username> <password>
-  /delcredentials <platform>
-  /listcredentials
-  /refreshcookie <platform>   — manual Playwright refresh
+  /testcookie <platform>   — parse a known test URL with the stored cookie,
+                             show raw result or error so you can diagnose
+  /checkcookies            — run health-check immediately for all platforms
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import os
 from typing import Optional
 
@@ -25,16 +23,7 @@ import aiohttp
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from bot.database import (
-    delete_bot_config,
-    get_all_bot_configs,
-    get_all_credentials,
-    get_credential,
-    set_bot_config,
-    set_credential,
-    delete_credential,
-    update_credential_refresh,
-)
+from bot.database import get_all_bot_configs, get_bot_config, set_bot_config
 from bot.logger import get_logger
 from bot.permissions import owner_only
 
@@ -53,47 +42,38 @@ _PLATFORM_DISPLAY: dict[str, str] = {
     "cookie_xiaohongshu": "小红书",
 }
 
-_COOKIE_KEY_TO_SLUG: dict[str, str] = {
-    "cookie_instagram":   "instagram",
-    "cookie_twitter":     "twitter",
-    "cookie_bilibili":    "bilibili",
-    "cookie_youtube":     "youtube",
-    "cookie_tiktok":      "tiktok",
-    "cookie_douyin":      "douyin",
-    "cookie_kuaishou":    "kuaishou",
-    "cookie_xiaohongshu": "xiaohongshu",
+# A known public URL per platform for /testcookie
+_TEST_URLS: dict[str, str] = {
+    "instagram":   "https://www.instagram.com/instagram/",
+    "twitter":     "https://x.com/x",
+    "bilibili":    "https://www.bilibili.com/video/BV1GJ411x7h7",
+    "youtube":     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "tiktok":      "https://www.tiktok.com/@tiktok/video/7106594312292453675",
+    "douyin":      "https://www.douyin.com/video/7376812765601591595",
+    "kuaishou":    "https://www.kuaishou.com/short-video/3xkmwfe4kqhmmym",
+    "xiaohongshu": "https://www.xiaohongshu.com/explore",
 }
 
-# Platforms where Playwright auto-login is implemented
-_PW_SUPPORTED = {"instagram", "twitter", "bilibili", "tiktok"}
-
-# Platforms supporting auto-refresh (shown in /listcredentials and web UI)
-_CREDENTIAL_PLATFORMS: dict[str, str] = {
-    "instagram": "Instagram",
-    "twitter":   "Twitter/X",
-    "bilibili":  "Bilibili",
-    "tiktok":    "TikTok",
+_SLUG_TO_COOKIE_KEY: dict[str, str] = {
+    "instagram":   "cookie_instagram",
+    "twitter":     "cookie_twitter",
+    "bilibili":    "cookie_bilibili",
+    "youtube":     "cookie_youtube",
+    "tiktok":      "cookie_tiktok",
+    "douyin":      "cookie_douyin",
+    "kuaishou":    "cookie_kuaishou",
+    "xiaohongshu": "cookie_xiaohongshu",
 }
 
-_PLATFORM_ALIAS = {"x": "twitter", "ins": "instagram", "b站": "bilibili"}
-
-
-# ---------------------------------------------------------------------------
-# Encryption helpers (Fernet, key derived from bot token)
-# ---------------------------------------------------------------------------
-
-def _derive_key(bot_token: str) -> bytes:
-    return base64.urlsafe_b64encode(hashlib.sha256(bot_token.encode()).digest())
-
-
-def encrypt_password(bot_token: str, password: str) -> str:
-    from cryptography.fernet import Fernet
-    return Fernet(_derive_key(bot_token)).encrypt(password.encode()).decode()
-
-
-def decrypt_password(bot_token: str, encrypted: str) -> str:
-    from cryptography.fernet import Fernet
-    return Fernet(_derive_key(bot_token)).decrypt(encrypted.encode()).decode()
+_PLATFORM_ALIAS = {
+    "x":       "twitter",
+    "ins":     "instagram",
+    "xhs":     "xiaohongshu",
+    "小红书":   "xiaohongshu",
+    "抖音":     "douyin",
+    "快手":     "kuaishou",
+    "b站":      "bilibili",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +102,6 @@ async def _check_instagram(cookie: str) -> Optional[bool]:
 
 
 async def _check_twitter(cookie: str) -> Optional[bool]:
-    # Extract ct0 value needed for X-CSRF-Token
     ct0 = None
     for part in cookie.split(";"):
         k, _, v = part.strip().partition("=")
@@ -131,12 +110,10 @@ async def _check_twitter(cookie: str) -> Optional[bool]:
             break
     if not ct0:
         return None
-
     headers = {
         "Cookie": cookie,
         "X-Csrf-Token": ct0,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        # Public bearer token used by the Twitter web app
+        "User-Agent": "Mozilla/5.0",
         "Authorization": "Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA",
     }
     try:
@@ -179,10 +156,7 @@ async def _check_bilibili(cookie: str) -> Optional[bool]:
 
 
 async def _check_youtube(cookie: str) -> Optional[bool]:
-    headers = {
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0",
-    }
+    headers = {"Cookie": cookie, "User-Agent": "Mozilla/5.0"}
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(
@@ -231,8 +205,7 @@ _CHECKERS = {
 }
 
 
-async def _check_cookie(cookie_key: str, cookie_value: str) -> Optional[bool]:
-    """Return True=valid, False=expired, None=no reliable test for this platform."""
+async def _check_one(cookie_key: str, cookie_value: str) -> Optional[bool]:
     checker = _CHECKERS.get(cookie_key)
     if not checker:
         return None
@@ -240,155 +213,7 @@ async def _check_cookie(cookie_key: str, cookie_value: str) -> Optional[bool]:
 
 
 # ---------------------------------------------------------------------------
-# Playwright auto-refresh
-# ---------------------------------------------------------------------------
-
-async def _pw_launch():
-    from playwright.async_api import async_playwright
-    pw = await async_playwright().start()
-    browser = await pw.chromium.launch(
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
-    )
-    return pw, browser
-
-
-async def _pw_instagram(username: str, password: str) -> Optional[str]:
-    pw, browser = await _pw_launch()
-    ctx = await browser.new_context(
-        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        viewport={"width": 1280, "height": 720},
-    )
-    page = await ctx.new_page()
-    try:
-        await page.goto("https://www.instagram.com/accounts/login/", timeout=30000)
-        try:
-            await page.click("text=Allow all cookies", timeout=4000)
-        except Exception:
-            pass
-        await page.wait_for_selector('input[name="username"]', timeout=15000)
-        await page.fill('input[name="username"]', username)
-        await page.fill('input[name="password"]', password)
-        await page.click('button[type="submit"]')
-        await page.wait_for_url(
-            lambda u: "login" not in u and "challenge" not in u, timeout=25000
-        )
-        cookies = await ctx.cookies()
-        result = "; ".join(
-            f"{c['name']}={c['value']}"
-            for c in cookies if "instagram.com" in c.get("domain", "")
-        )
-        return result or None
-    finally:
-        await browser.close()
-        await pw.stop()
-
-
-async def _pw_twitter(username: str, password: str) -> Optional[str]:
-    pw, browser = await _pw_launch()
-    ctx = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    )
-    page = await ctx.new_page()
-    try:
-        await page.goto("https://x.com/i/flow/login", timeout=30000)
-        await page.wait_for_selector('input[autocomplete="username"]', timeout=15000)
-        await page.fill('input[autocomplete="username"]', username)
-        await page.click('[data-testid="LoginForm_Next_Button"]')
-        await page.wait_for_selector('input[name="password"]', timeout=10000)
-        await page.fill('input[name="password"]', password)
-        await page.click('[data-testid="LoginForm_Login_Button"]')
-        await page.wait_for_url(lambda u: "flow/login" not in u, timeout=20000)
-        cookies = await ctx.cookies()
-        result = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-        return result or None
-    finally:
-        await browser.close()
-        await pw.stop()
-
-
-async def _pw_bilibili(username: str, password: str) -> Optional[str]:
-    pw, browser = await _pw_launch()
-    ctx = await browser.new_context()
-    page = await ctx.new_page()
-    try:
-        await page.goto("https://passport.bilibili.com/login", timeout=30000)
-        await page.wait_for_selector("#login-username", timeout=15000)
-        await page.fill("#login-username", username)
-        await page.fill("#login-password", password)
-        await page.click(".btn_primary")
-        await page.wait_for_url(
-            lambda u: "passport.bilibili.com" not in u, timeout=20000
-        )
-        cookies = await ctx.cookies()
-        result = "; ".join(
-            f"{c['name']}={c['value']}"
-            for c in cookies if "bilibili.com" in c.get("domain", "")
-        )
-        return result or None
-    finally:
-        await browser.close()
-        await pw.stop()
-
-
-async def _pw_tiktok(username: str, password: str) -> Optional[str]:
-    pw, browser = await _pw_launch()
-    ctx = await browser.new_context(
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    )
-    page = await ctx.new_page()
-    try:
-        await page.goto(
-            "https://www.tiktok.com/login/phone-or-email/email", timeout=30000
-        )
-        await page.wait_for_selector('input[name="username"]', timeout=15000)
-        await page.fill('input[name="username"]', username)
-        await page.fill('input[type="password"]', password)
-        await page.click('button[type="submit"]')
-        await page.wait_for_url(lambda u: "login" not in u, timeout=20000)
-        cookies = await ctx.cookies()
-        result = "; ".join(
-            f"{c['name']}={c['value']}"
-            for c in cookies if "tiktok.com" in c.get("domain", "")
-        )
-        return result or None
-    finally:
-        await browser.close()
-        await pw.stop()
-
-
-_PW_LOGINS = {
-    "instagram": _pw_instagram,
-    "twitter":   _pw_twitter,
-    "bilibili":  _pw_bilibili,
-    "tiktok":    _pw_tiktok,
-}
-
-
-async def playwright_refresh(platform: str, username: str, password: str) -> Optional[str]:
-    """Run Playwright login and return new cookie string, or None on failure."""
-    try:
-        from playwright.async_api import async_playwright  # noqa — verify installed
-    except ImportError:
-        log.warning("Playwright not installed, skipping auto-refresh")
-        return None
-
-    login_fn = _PW_LOGINS.get(platform)
-    if not login_fn:
-        return None
-
-    try:
-        return await asyncio.wait_for(login_fn(username, password), timeout=120)
-    except asyncio.TimeoutError:
-        log.warning("Playwright login timed out", platform=platform)
-        return None
-    except Exception as e:
-        log.warning("Playwright login failed", platform=platform, error=str(e))
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Background health-check job
+# Background job
 # ---------------------------------------------------------------------------
 
 async def check_all_cookies(context) -> None:
@@ -402,6 +227,7 @@ async def check_all_cookies(context) -> None:
         return
 
     log.info("Cookie health check starting", count=len(cookie_keys))
+    expired = []
 
     for cookie_key in cookie_keys:
         cookie_value = configs.get(cookie_key, "")
@@ -409,70 +235,37 @@ async def check_all_cookies(context) -> None:
             continue
 
         platform_display = _PLATFORM_DISPLAY[cookie_key]
-        platform_slug = _COOKIE_KEY_TO_SLUG[cookie_key]
-
-        result = await _check_cookie(cookie_key, cookie_value)
+        result = await _check_one(cookie_key, cookie_value)
 
         if result is True:
             await set_bot_config(f"status_{cookie_key}", "valid")
             log.info("Cookie healthy", platform=platform_display)
-            continue
+        elif result is False:
+            await set_bot_config(f"status_{cookie_key}", "expired")
+            expired.append(platform_display)
+            log.warning("Cookie expired", platform=platform_display)
+        # None = no reliable test for this platform, leave status unchanged
 
-        if result is None:
-            # No reliable test for this platform; rely on failure detection in media.py
-            continue
-
-        # Cookie is expired
-        log.warning("Cookie expired detected by health check", platform=platform_display)
-        await set_bot_config(f"status_{cookie_key}", "expired")
-
-        # Try Playwright auto-refresh first
-        refreshed = False
-        if platform_slug in _PW_SUPPORTED:
-            cred = await get_credential(platform_slug)
-            if cred and bot.token:
-                try:
-                    pwd = decrypt_password(bot.token, cred.password_enc)
-                except Exception:
-                    pwd = None
-                if pwd:
-                    log.info("Attempting Playwright auto-refresh", platform=platform_display)
-                    new_cookie = await playwright_refresh(platform_slug, cred.username, pwd)
-                    if new_cookie:
-                        await set_bot_config(cookie_key, new_cookie)
-                        await set_bot_config(f"status_{cookie_key}", "valid")
-                        await update_credential_refresh(platform_slug, ok=True)
-                        refreshed = True
-                        log.info("Cookie auto-refreshed successfully", platform=platform_display)
-                        if owner_id:
-                            try:
-                                await bot.send_message(
-                                    owner_id,
-                                    f"✅ <b>{platform_display} Cookie 已自动刷新</b>\n\n"
-                                    f"Playwright 自动登录成功，新 Cookie 已保存。",
-                                    parse_mode="HTML",
-                                )
-                            except Exception:
-                                pass
-                    else:
-                        await update_credential_refresh(platform_slug, ok=False)
-
-        if not refreshed and owner_id:
-            try:
-                msg = (
-                    f"⚠️ <b>{platform_display} Cookie 已失效</b>\n\n"
-                    f"定时健康检查（每 {_CHECK_INTERVAL_HOURS}h）发现 Cookie 无法通过验证。\n\n"
-                    f"请手动更新：\n"
-                    f"<code>/setcookie {platform_slug} &lt;新Cookie&gt;</code>"
-                )
-                if platform_slug in _PW_SUPPORTED and not await get_credential(platform_slug):
-                    msg += (
-                        f"\n\n💡 配置账号密码可实现自动刷新：\n"
-                        f"<code>/setcredentials {platform_slug} &lt;用户名&gt; &lt;密码&gt;</code>"
-                    )
-                await bot.send_message(owner_id, msg, parse_mode="HTML")
-            except Exception as e:
-                log.warning("Failed to notify owner of expired cookie", error=str(e))
+    if expired and owner_id:
+        platforms_str = "、".join(expired)
+        note = (
+            "⚠️ 注意：Instagram/Twitter 的 Cookie 通常与登录时的 IP 绑定，"
+            "在不同 IP 的服务器上使用会被平台拒绝，这是平台的安全机制。\n"
+            "建议通过浏览器代理或直接在服务器 IP 登录后重新导出 Cookie。"
+        )
+        try:
+            await bot.send_message(
+                owner_id,
+                f"⚠️ <b>Cookie 失效提醒</b>\n\n"
+                f"以下平台 Cookie 健康检测失败：<b>{platforms_str}</b>\n\n"
+                f"请重新获取 Cookie 并更新：\n"
+                f"<code>/setcookie &lt;平台&gt; &lt;新Cookie&gt;</code>\n\n"
+                f"{note}\n\n"
+                f"用 <code>/testcookie &lt;平台&gt;</code> 可诊断具体错误。",
+                parse_mode="HTML",
+            )
+        except Exception as e:
+            log.warning("Failed to notify owner of expired cookies", error=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -480,160 +273,148 @@ async def check_all_cookies(context) -> None:
 # ---------------------------------------------------------------------------
 
 @owner_only
-async def cmd_setcredentials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Usage: /setcredentials <platform> <username> <password>"""
+async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Usage: /testcookie <platform> [url] — test stored cookie with ParseHub."""
     msg = update.effective_message
     args = context.args or []
-    if len(args) < 3:
-        platforms = " ".join(_CREDENTIAL_PLATFORMS.keys())
+
+    if not args:
+        platforms = " ".join(_SLUG_TO_COOKIE_KEY.keys())
         await msg.reply_text(
-            "用法：<code>/setcredentials &lt;平台&gt; &lt;用户名&gt; &lt;密码&gt;</code>\n\n"
-            f"支持自动刷新的平台：<code>{platforms}</code>\n\n"
-            "密码会用 AES 加密存储在数据库中。",
+            "用法：<code>/testcookie &lt;平台&gt; [自定义URL]</code>\n\n"
+            f"支持的平台：<code>{platforms}</code>\n\n"
+            "会用存储的 Cookie 尝试解析该平台的一个测试链接，并显示原始结果或错误信息。",
             parse_mode="HTML",
         )
         return
 
-    platform = _PLATFORM_ALIAS.get(args[0].lower(), args[0].lower())
-    username = args[1]
-    password = " ".join(args[2:])
+    raw_platform = args[0].lower()
+    platform = _PLATFORM_ALIAS.get(raw_platform, raw_platform)
+    cookie_key = _SLUG_TO_COOKIE_KEY.get(platform)
 
-    if platform not in _CREDENTIAL_PLATFORMS:
+    if not cookie_key:
+        await msg.reply_text(f"❌ 未知平台：<code>{raw_platform}</code>", parse_mode="HTML")
+        return
+
+    cookie = await get_bot_config(cookie_key)
+    if not cookie:
         await msg.reply_text(
-            f"❌ 不支持自动刷新的平台：<code>{platform}</code>\n\n"
-            f"支持：{' '.join(_CREDENTIAL_PLATFORMS.keys())}",
+            f"❌ 未配置 {_PLATFORM_DISPLAY.get(cookie_key, platform)} 的 Cookie\n\n"
+            f"请先：<code>/setcookie {platform} &lt;Cookie字符串&gt;</code>",
             parse_mode="HTML",
         )
         return
+
+    test_url = args[1] if len(args) > 1 else _TEST_URLS.get(platform, "")
+    if not test_url:
+        await msg.reply_text(f"❌ 请提供测试 URL：<code>/testcookie {platform} &lt;URL&gt;</code>", parse_mode="HTML")
+        return
+
+    display = _PLATFORM_DISPLAY.get(cookie_key, platform)
+    status_msg = await msg.reply_text(
+        f"⏳ 正在用 {display} Cookie 解析测试链接…\n<code>{test_url[:80]}</code>",
+        parse_mode="HTML",
+    )
 
     try:
-        encrypted = encrypt_password(context.bot.token, password)
-    except ImportError:
-        await msg.reply_text("❌ cryptography 未安装，无法加密凭据。请检查依赖。")
+        from parsehub import ParseHub
+        from parsehub.errors import UnknownPlatform, ParseError
+        ph = ParseHub()
+
+        result = await asyncio.wait_for(
+            ph.parse(test_url, cookie=cookie),
+            timeout=30,
+        )
+
+        title = (getattr(result, "title", "") or "").strip()
+        platform_name = getattr(getattr(result, "platform", None), "display_name", display)
+        result_type = type(result).__name__
+
+        await status_msg.edit_text(
+            f"✅ <b>Cookie 有效！ParseHub 解析成功</b>\n\n"
+            f"平台：{platform_name}\n"
+            f"结果类型：{result_type}\n"
+            f"标题：{title[:100] or '（无）'}\n\n"
+            f"Cookie 可正常工作 🎉",
+            parse_mode="HTML",
+        )
+
+    except asyncio.TimeoutError:
+        await status_msg.edit_text(
+            f"⏱ <b>解析超时（30s）</b>\n\n"
+            f"可能原因：网络慢、平台需要更多时间、或 Cookie 无效导致卡在认证。",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        err = str(e)
+        diagnosis = ""
+        if "401" in err or "403" in err or "unauthorized" in err.lower():
+            diagnosis = (
+                "\n\n🔍 <b>诊断</b>：收到 401/403，Cookie 已被平台拒绝。\n"
+                "常见原因：\n"
+                "• Cookie 与登录 IP 绑定，服务器 IP 不同导致失效\n"
+                "• Cookie 已过期，需重新登录后导出\n"
+                "• Cookie 格式不对，应使用 Cookie-Editor → Export → <b>Header String</b> 格式"
+            )
+        elif "login" in err.lower() or "sign" in err.lower():
+            diagnosis = "\n\n🔍 <b>诊断</b>：平台要求登录，Cookie 无效或未被识别。"
+        elif "unknown" in err.lower() or "platform" in err.lower():
+            diagnosis = "\n\n🔍 <b>诊断</b>：ParseHub 不识别该 URL，请换一个具体的内容链接（非首页）。"
+
+        await status_msg.edit_text(
+            f"❌ <b>解析失败</b>\n\n"
+            f"错误：<code>{err[:300]}</code>"
+            f"{diagnosis}",
+            parse_mode="HTML",
+        )
+
+
+@owner_only
+async def cmd_checkcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Manually trigger cookie health check for all platforms."""
+    msg = update.effective_message
+    configs = await get_all_bot_configs()
+    cookie_keys = [k for k in configs if k.startswith("cookie_") and k in _PLATFORM_DISPLAY]
+
+    if not cookie_keys:
+        await msg.reply_text("没有配置任何平台 Cookie。")
         return
 
-    await set_credential(platform, username, encrypted)
-    display = _CREDENTIAL_PLATFORMS[platform]
-    log.info("Credentials saved", platform=display)
-    await msg.reply_text(
-        f"✅ <b>{display}</b> 账号凭据已保存\n\n"
-        f"用户名：<code>{username}</code>\n"
-        f"密码已加密存储。\n\n"
-        f"Cookie 失效时将自动用 Playwright 刷新，也可手动执行：\n"
-        f"<code>/refreshcookie {platform}</code>",
+    status_msg = await msg.reply_text(f"⏳ 正在检测 {len(cookie_keys)} 个平台的 Cookie…")
+
+    results = []
+    for cookie_key in cookie_keys:
+        cookie_value = configs.get(cookie_key, "")
+        if not cookie_value:
+            continue
+        display = _PLATFORM_DISPLAY[cookie_key]
+        result = await _check_one(cookie_key, cookie_value)
+
+        if result is True:
+            await set_bot_config(f"status_{cookie_key}", "valid")
+            results.append(f"🟢 <b>{display}</b>  有效")
+        elif result is False:
+            await set_bot_config(f"status_{cookie_key}", "expired")
+            results.append(f"🔴 <b>{display}</b>  已失效")
+        else:
+            results.append(f"⬜ <b>{display}</b>  无法检测（该平台无可靠测试端点）")
+
+    await status_msg.edit_text(
+        "<b>Cookie 健康检测结果</b>\n\n" + "\n".join(results) + "\n\n"
+        "用 <code>/testcookie &lt;平台&gt;</code> 可做 ParseHub 实际解析测试。",
         parse_mode="HTML",
     )
 
 
-@owner_only
-async def cmd_delcredentials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = update.effective_message
-    args = context.args or []
-    if not args:
-        await msg.reply_text("用法：<code>/delcredentials &lt;平台&gt;</code>", parse_mode="HTML")
-        return
-
-    platform = _PLATFORM_ALIAS.get(args[0].lower(), args[0].lower())
-    await delete_credential(platform)
-    display = _CREDENTIAL_PLATFORMS.get(platform, platform)
-    await msg.reply_text(f"🗑 {display} 账号凭据已删除")
-
-
-@owner_only
-async def cmd_listcredentials(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    msg = update.effective_message
-    creds = await get_all_credentials()
-    cred_map = {c.platform: c for c in creds}
-
-    lines = ["<b>账号凭据状态（自动刷新）</b>\n"]
-    for slug, display in _CREDENTIAL_PLATFORMS.items():
-        cred = cred_map.get(slug)
-        if cred:
-            if cred.last_refresh_ok is True:
-                status = "🟢 上次刷新成功"
-            elif cred.last_refresh_ok is False:
-                status = "🔴 上次刷新失败"
-            else:
-                status = "⬜ 从未触发"
-            lines.append(
-                f"🔑 <b>{display}</b>  {status}\n"
-                f"   用户名：<code>{cred.username}</code>"
-            )
-        else:
-            lines.append(f"⬜ <b>{display}</b>  未配置")
-
-    await msg.reply_text("\n".join(lines), parse_mode="HTML")
-
-
-@owner_only
-async def cmd_refreshcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Usage: /refreshcookie <platform> — manually trigger Playwright refresh."""
-    msg = update.effective_message
-    args = context.args or []
-    if not args:
-        await msg.reply_text(
-            "用法：<code>/refreshcookie &lt;平台&gt;</code>\n\n"
-            f"支持：{' '.join(_CREDENTIAL_PLATFORMS.keys())}",
-            parse_mode="HTML",
-        )
-        return
-
-    platform = _PLATFORM_ALIAS.get(args[0].lower(), args[0].lower())
-    display = _CREDENTIAL_PLATFORMS.get(platform, platform)
-
-    if platform not in _PW_SUPPORTED:
-        await msg.reply_text(f"❌ {display} 不支持 Playwright 自动刷新")
-        return
-
-    cred = await get_credential(platform)
-    if not cred:
-        await msg.reply_text(
-            f"❌ 未配置 {display} 的账号凭据\n\n"
-            f"请先：<code>/setcredentials {platform} &lt;用户名&gt; &lt;密码&gt;</code>",
-            parse_mode="HTML",
-        )
-        return
-
-    status_msg = await msg.reply_text(f"⏳ 正在用 Playwright 刷新 {display} Cookie…")
-
-    try:
-        pwd = decrypt_password(context.bot.token, cred.password_enc)
-    except Exception as e:
-        await status_msg.edit_text(f"❌ 解密凭据失败：{e}")
-        return
-
-    new_cookie = await playwright_refresh(platform, cred.username, pwd)
-    cookie_key = f"cookie_{platform}"
-
-    if new_cookie:
-        await set_bot_config(cookie_key, new_cookie)
-        await set_bot_config(f"status_{cookie_key}", "valid")
-        await update_credential_refresh(platform, ok=True)
-        await status_msg.edit_text(
-            f"✅ <b>{display} Cookie 刷新成功</b>\n新 Cookie 已保存（{len(new_cookie)} 字符）",
-            parse_mode="HTML",
-        )
-    else:
-        await update_credential_refresh(platform, ok=False)
-        await status_msg.edit_text(
-            f"❌ <b>{display} Cookie 刷新失败</b>\n\n"
-            f"请检查账号密码是否正确，或手动更新 Cookie：\n"
-            f"<code>/setcookie {platform} &lt;新Cookie&gt;</code>",
-            parse_mode="HTML",
-        )
-
-
 def setup(application: Application) -> None:
-    application.add_handler(CommandHandler("setcredentials", cmd_setcredentials))
-    application.add_handler(CommandHandler("delcredentials", cmd_delcredentials))
-    application.add_handler(CommandHandler("listcredentials", cmd_listcredentials))
-    application.add_handler(CommandHandler("refreshcookie", cmd_refreshcookie))
+    application.add_handler(CommandHandler("testcookie", cmd_testcookie))
+    application.add_handler(CommandHandler("checkcookies", cmd_checkcookies))
 
     interval_secs = _CHECK_INTERVAL_HOURS * 3600
     application.job_queue.run_repeating(
         check_all_cookies,
         interval=interval_secs,
-        first=120,  # first check 2 minutes after startup
+        first=300,  # first check 5 minutes after startup
         name="cookie_health_check",
     )
     log.info("cookie_manager module loaded", check_interval_hours=_CHECK_INTERVAL_HOURS)

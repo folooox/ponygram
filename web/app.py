@@ -33,20 +33,15 @@ from bot.database import (
     add_to_blacklist,
     delete_bot_config,
     get_all_bot_configs,
-    get_all_credentials,
     get_all_rss_feeds,
     get_bot_config,
-    get_credential,
     get_group_settings,
     get_session,
     remove_from_blacklist,
     remove_rss_feed,
     set_bot_config,
-    set_credential,
-    delete_credential,
     set_feed_paused,
     set_group_field,
-    update_credential_refresh,
 )
 from sqlalchemy import func, select
 
@@ -407,11 +402,9 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         configs = await get_all_bot_configs()
-        credentials = {c.platform: c for c in await get_all_credentials()}
         return templates.TemplateResponse(request, "settings.html", {
             "active": "settings",
             "configs": configs,
-            "credentials": credentials,
             "saved": bool(saved),
         })
 
@@ -442,75 +435,5 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 await set_bot_config(key, val)
 
         return RedirectResponse(url="/settings?saved=1", status_code=303)
-
-    # ------------------------------------------------------------------ #
-    # Credentials (Playwright auto-refresh)                               #
-    # ------------------------------------------------------------------ #
-
-    _PW_PLATFORMS = ["instagram", "twitter", "bilibili", "tiktok"]
-
-    @app.post("/settings/credentials")
-    async def credentials_update(
-        request: Request,
-        session: Optional[str] = Cookie(None),
-    ):
-        if not _authed(session):
-            return _redirect_login()
-
-        form = await request.form()
-        if not _bot:
-            return RedirectResponse(url="/settings?saved=1", status_code=303)
-
-        try:
-            from modules.cookie_manager import encrypt_password
-        except ImportError:
-            return RedirectResponse(url="/settings?saved=1", status_code=303)
-
-        for platform in _PW_PLATFORMS:
-            action = form.get(f"cred_action_{platform}", "").strip()
-            if action == "delete":
-                await delete_credential(platform)
-                continue
-            username = form.get(f"cred_username_{platform}", "").strip()
-            password = form.get(f"cred_password_{platform}", "").strip()
-            if username and password:
-                encrypted = encrypt_password(_bot.token, password)
-                await set_credential(platform, username, encrypted)
-
-        return RedirectResponse(url="/settings?saved=1", status_code=303)
-
-    @app.post("/settings/credentials/{platform}/refresh")
-    async def credentials_refresh(
-        platform: str,
-        session: Optional[str] = Cookie(None),
-    ):
-        if not _authed(session):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-        if platform not in _PW_PLATFORMS:
-            return JSONResponse({"error": "unsupported platform"}, status_code=400)
-        if not _bot:
-            return JSONResponse({"error": "bot not available"}, status_code=503)
-
-        cred = await get_credential(platform)
-        if not cred:
-            return JSONResponse({"error": "no credentials configured"}, status_code=404)
-
-        try:
-            from modules.cookie_manager import decrypt_password, playwright_refresh
-            pwd = decrypt_password(_bot.token, cred.password_enc)
-        except Exception as e:
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-        new_cookie = await playwright_refresh(platform, cred.username, pwd)
-        cookie_key = f"cookie_{platform}"
-
-        if new_cookie:
-            await set_bot_config(cookie_key, new_cookie)
-            await set_bot_config(f"status_{cookie_key}", "valid")
-            await update_credential_refresh(platform, ok=True)
-            return JSONResponse({"success": True, "length": len(new_cookie)})
-        else:
-            await update_credential_refresh(platform, ok=False)
-            return JSONResponse({"error": "Playwright login failed"}, status_code=500)
 
     return app
