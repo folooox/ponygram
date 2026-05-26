@@ -86,6 +86,7 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 }
 
 _ph = None
+_ytparser_patched = False
 
 
 def _is_known_url(url: str) -> bool:
@@ -98,10 +99,45 @@ def _is_auth_error(msg: str) -> bool:
     return any(p in m for p in _AUTH_REQUIRED_PHRASES)
 
 
+def _patch_ytparser_proxy() -> None:
+    """Inject the SOCKS5 proxy into yt-dlp's YoutubeDL params inside ParseHub.
+
+    ParseHub's YtParser builds params without a proxy key, so yt-dlp ignores
+    HTTP_PROXY / HTTPS_PROXY env vars (it reads them only at init time).
+    We patch the params property here so every YoutubeDL() call gets the proxy.
+    """
+    global _ytparser_patched
+    if _ytparser_patched:
+        return
+    proxy = (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("ALL_PROXY")
+    )
+    if not proxy:
+        return
+    try:
+        from parsehub.parsers.base.yt_dlp_parser import YtParser
+
+        _orig_fget = YtParser.params.fget
+
+        def _patched_fget(self):
+            p = _orig_fget(self)
+            p["proxy"] = proxy
+            return p
+
+        YtParser.params = property(_patched_fget)
+        _ytparser_patched = True
+        log.info("YtParser proxy patched", proxy=proxy)
+    except Exception as e:
+        log.warning("Failed to patch YtParser proxy", error=str(e))
+
+
 def _get_ph():
     global _ph
     if _ph is None:
         from parsehub import ParseHub
+        _patch_ytparser_proxy()
         _ph = ParseHub()
     return _ph
 
@@ -141,7 +177,6 @@ async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
         log.warning("Cookie expired notification sent", platform=platform, err=err[:100])
     except Exception as e:
         log.warning("Failed to notify owner of cookie expiry", error=str(e))
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
