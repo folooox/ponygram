@@ -117,7 +117,7 @@ def _patch_ytparser_proxy() -> None:
     if not proxy:
         return
     try:
-        from parsehub.parsers.base.yt_dlp_parser import YtParser
+        from parsehub.parsers.base.ytdlp import YtParser
 
         _orig_fget = YtParser.params.fget
 
@@ -304,7 +304,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         files: list[Path] = []
         try:
             dr = await asyncio.wait_for(
-                result.download(path=tmp_dir),
+                result.download(path=tmp_dir, proxy=proxy),
                 timeout=180,
             )
             files = _get_files(dr)
