@@ -15,6 +15,7 @@ Per-group dlmode_enabled toggle (default True) controls whether parsing runs.
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import re
 import tempfile
@@ -127,7 +128,7 @@ async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
             (d.split(".")[0].capitalize() for d in _DOMAIN_COOKIE_KEY if d in url_lower),
             "某平台",
         )
-        err_block = f"\n原始错误：<code>{err[:200]}</code>\n" if err else ""
+        err_block = f"\n原始错误：<code>{html.escape(err[:200])}</code>\n" if err else ""
         await context.bot.send_message(
             owner_id,
             f"⚠️ <b>{platform} Cookie 可能已失效</b>\n\n"
@@ -221,22 +222,21 @@ async def _process_url(update: Update, context, url: str) -> None:
                     await _notify_cookie_expired(context, url, err)
                     await status.edit_text(
                         f"❌ 该平台 Cookie 似乎已失效\n\n"
-                        f"原始错误：<code>{err[:200]}</code>\n\n"
+                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
                         f"<i>使用 /testcookie 诊断或 /setcookie 重新配置</i>",
                         parse_mode=ParseMode.HTML,
                     )
                 else:
                     await status.edit_text(
                         f"❌ 该平台需要登录才能解析\n\n"
-                        f"原始错误：<code>{err[:200]}</code>\n\n"
+                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
                         f"<i>使用 /setcookie 配置 Cookie</i>",
                         parse_mode=ParseMode.HTML,
                     )
             else:
-                # Non-auth error — show the actual error to the user so they can diagnose
                 await status.edit_text(
-                    f"❌ 解析失败（{err_type}）\n\n"
-                    f"<code>{err[:300]}</code>",
+                    f"❌ 解析失败（{html.escape(err_type)}）\n\n"
+                    f"<code>{html.escape(err[:300])}</code>",
                     parse_mode=ParseMode.HTML,
                 )
             return

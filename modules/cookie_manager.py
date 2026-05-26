@@ -16,6 +16,7 @@ Commands (owner only):
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 import traceback
 from typing import Optional
@@ -355,7 +356,6 @@ async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             url=test_url, err=err, err_type=err_type, traceback=tb,
         )
 
-        # Walk chained exceptions to find the underlying cause
         cause = e.__cause__ or e.__context__
         cause_str = ""
         while cause:
@@ -365,11 +365,15 @@ async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 break
             cause = nxt
 
+        cause_html = (
+            f"\n\n<b>底层原因</b>：<code>{html.escape(cause_str[:400])}</code>"
+            if cause_str else ""
+        )
         await status_msg.edit_text(
-            f"❌ <b>解析失败（{err_type}）</b>\n\n"
-            f"错误：<code>{err[:300]}</code>"
-            f"{('<b>底层原因</b>：<code>' + cause_str[:400] + '</code>') if cause_str else ''}\n\n"
-            f"💡 完整 traceback 已写入 docker 日志，用 <code>/debugparse {test_url}</code> 可绕过 ParseHub 直接调用 yt-dlp 拿真错误",
+            f"❌ <b>解析失败（{html.escape(err_type)}）</b>\n\n"
+            f"错误：<code>{html.escape(err[:300])}</code>"
+            f"{cause_html}\n\n"
+            f"💡 用 <code>/debugparse {html.escape(test_url)}</code> 绕过 ParseHub 直接调用 yt-dlp 拿真错误",
             parse_mode="HTML",
         )
 
@@ -411,58 +415,149 @@ async def cmd_checkcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+)
+
+
+def _cookie_str_to_jar_lines(cookie_str: str, domain: str) -> str:
+    """Convert 'k=v; k=v' to Netscape cookie file format for yt-dlp."""
+    lines = ["# Netscape HTTP Cookie File"]
+    for part in cookie_str.split(";"):
+        k, _, v = part.strip().partition("=")
+        if k and v:
+            lines.append(f".{domain}\tTRUE\t/\tFALSE\t2147483647\t{k.strip()}\t{v.strip()}")
+    return "\n".join(lines) + "\n"
+
+
 @owner_only
 async def cmd_debugparse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Usage: /debugparse <url> — call yt-dlp directly to surface real error."""
+    """Usage: /debugparse <url> — call yt-dlp directly with browser-like headers + stored cookie."""
     msg = update.effective_message
     args = context.args or []
     if not args:
         await msg.reply_text(
             "用法：<code>/debugparse &lt;URL&gt;</code>\n\n"
-            "直接调用 yt-dlp 解析（绕过 ParseHub 包装层），显示真实错误。",
+            "直接调用 yt-dlp 解析（绕过 ParseHub），并附加浏览器请求头 + 已配置的平台 Cookie。",
             parse_mode="HTML",
         )
         return
 
     url = args[0]
-    status_msg = await msg.reply_text(f"⏳ 正在用 yt-dlp 直接解析…\n<code>{url[:80]}</code>", parse_mode="HTML")
+    url_lower = url.lower()
+
+    # Determine which platform Cookie to use
+    platform_slug = None
+    cookie_domain = None
+    for slug, ck_key in _SLUG_TO_COOKIE_KEY.items():
+        # Match domains based on cookie key mapping in media.py
+        matches = {
+            "instagram":   ("instagram.com",),
+            "twitter":     ("twitter.com", "x.com", "t.co"),
+            "bilibili":    ("bilibili.com", "b23.tv"),
+            "douyin":      ("douyin.com",),
+            "tiktok":      ("tiktok.com",),
+            "kuaishou":    ("kuaishou.com",),
+            "xiaohongshu": ("xiaohongshu.com", "xhslink.com"),
+            "youtube":     ("youtube.com", "youtu.be"),
+        }.get(slug, ())
+        for d in matches:
+            if d in url_lower:
+                platform_slug = slug
+                cookie_domain = d
+                break
+        if platform_slug:
+            break
+
+    cookie_str = await get_bot_config(_SLUG_TO_COOKIE_KEY[platform_slug]) if platform_slug else None
+    has_cookie = bool(cookie_str)
+
+    status_msg = await msg.reply_text(
+        f"⏳ 正在用 yt-dlp 直接解析…\n"
+        f"URL: <code>{html.escape(url[:80])}</code>\n"
+        f"Cookie: {'✅ 使用 ' + platform_slug if has_cookie else '⚠️ 未配置'}",
+        parse_mode="HTML",
+    )
+
+    # Write cookie to temp file (Netscape format) if available
+    import tempfile
+    cookie_file = None
+    if cookie_str and cookie_domain:
+        try:
+            f = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False)
+            f.write(_cookie_str_to_jar_lines(cookie_str, cookie_domain))
+            f.close()
+            cookie_file = f.name
+        except Exception as e:
+            log.warning("Failed to write cookie file", error=str(e))
 
     def _yt_dlp_call():
         import yt_dlp
-        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "simulate": True}
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "skip_download": True,
+            "simulate": True,
+            "http_headers": {
+                "User-Agent": _BROWSER_UA,
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            },
+        }
+        if cookie_file:
+            opts["cookiefile"] = cookie_file
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.extract_info(url, download=False)
 
     try:
-        info = await asyncio.wait_for(asyncio.to_thread(_yt_dlp_call), timeout=30)
+        info = await asyncio.wait_for(asyncio.to_thread(_yt_dlp_call), timeout=45)
         title = (info.get("title") or "")[:120] if info else "（无）"
         extractor = info.get("extractor", "?") if info else "?"
         n_formats = len(info.get("formats", [])) if info else 0
         await status_msg.edit_text(
             f"✅ <b>yt-dlp 直接调用成功</b>\n\n"
-            f"提取器：<code>{extractor}</code>\n"
-            f"标题：{title}\n"
+            f"提取器：<code>{html.escape(extractor)}</code>\n"
+            f"标题：{html.escape(title)}\n"
             f"可用格式数：{n_formats}\n\n"
-            f"说明：yt-dlp 能解析说明 URL 本身没问题。"
-            f"如果 ParseHub 失败，是 ParseHub 自己的 bug 或对 yt-dlp 输出处理有问题。",
+            f"说明：yt-dlp 能解析说明 URL 本身没问题。\n"
+            f"如果 ParseHub 失败，可能是 ParseHub 没把 Cookie 正确传给 yt-dlp。",
             parse_mode="HTML",
         )
     except asyncio.TimeoutError:
-        await status_msg.edit_text("⏱ yt-dlp 调用超时（30s）")
+        await status_msg.edit_text("⏱ yt-dlp 调用超时（45s）")
     except Exception as e:
         err = str(e)
         err_type = type(e).__name__
         tb = traceback.format_exc()
         log.warning("debugparse yt-dlp failure", url=url, err=err, err_type=err_type, traceback=tb)
+
+        diagnosis = ""
+        if "412" in err:
+            diagnosis = (
+                "\n\n🔍 <b>HTTP 412</b>：Bilibili 风控拦截。可能原因：\n"
+                "• 服务器 IP 被识别为爬虫（IDC/云服务器 IP 池常见）\n"
+                "• 即使有 Cookie 也可能被拒绝\n"
+                "• 解决方案：使用住宅代理 / 在家庭网络部署 / 用 bilibili-api 库自己实现"
+            )
+        elif "-352" in err:
+            diagnosis = "\n\n🔍 <b>-352</b>：Bilibili WBI 签名风控。yt-dlp 当前版本对此处理较弱。"
+        elif "403" in err or "401" in err:
+            diagnosis = "\n\n🔍 <b>认证错误</b>：需要 Cookie，请用 /setcookie 配置。"
+        elif "Sign in" in err or "login" in err.lower():
+            diagnosis = "\n\n🔍 <b>需要登录</b>：请配置 Cookie。"
+
         await status_msg.edit_text(
-            f"❌ <b>yt-dlp 也失败了（{err_type}）</b>\n\n"
-            f"<code>{err[:600]}</code>\n\n"
-            f"这是 yt-dlp 的真实错误。常见原因：\n"
-            f"• <b>412 / -352</b> — Bilibili 风控拦截（服务器 IP 被识别为爬虫）\n"
-            f"• <b>需要登录</b> — 加上对应平台 Cookie 重试\n"
-            f"• <b>视频已删除/私有</b>",
+            f"❌ <b>yt-dlp 也失败了（{html.escape(err_type)}）</b>\n\n"
+            f"<code>{html.escape(err[:500])}</code>"
+            f"{diagnosis}",
             parse_mode="HTML",
         )
+    finally:
+        if cookie_file:
+            try:
+                os.unlink(cookie_file)
+            except OSError:
+                pass
 
 
 def setup(application: Application) -> None:
