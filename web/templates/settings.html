@@ -161,10 +161,17 @@
         <ol class="mb-1 ps-3" style="color:#adb5bd">
           <li>浏览器安装 <a href="https://cookie-editor.com/" target="_blank" class="text-info">Cookie-Editor</a> 插件（Chrome / Firefox）</li>
           <li>登录对应平台网页版</li>
-          <li>点击插件图标 → 选择 <strong>Export → Header String</strong></li>
-          <li>复制内容粘贴到下方对应输入框</li>
+          <li>点击插件图标 → 选择 <strong>Export</strong>，以下三种格式均可自动识别：</li>
         </ol>
-        <div style="color:#6c757d">Cookie 格式示例：<code>sessionid=abc123; csrftoken=xyz456; ds_user_id=789…</code></div>
+        <div class="mt-2 mb-1 ps-3" style="color:#adb5bd">
+          <div class="mb-1"><span class="badge bg-success me-1" style="font-size:.65rem">推荐</span><strong>Header String</strong>
+            <code style="font-size:.72rem">sessionid=abc; csrftoken=xyz; ds_user_id=789</code></div>
+          <div class="mb-1"><span class="badge bg-secondary me-1" style="font-size:.65rem">支持</span><strong>JSON</strong>
+            <code style="font-size:.72rem">[{"name":"sessionid","value":"abc",...}]</code></div>
+          <div><span class="badge bg-secondary me-1" style="font-size:.65rem">支持</span><strong>Netscape / cookies.txt</strong>
+            <code style="font-size:.72rem">.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tabc</code></div>
+        </div>
+        <div class="mt-2" style="color:#6c757d">粘贴后自动检测格式并规范化，保存按钮旁会显示识别到的 Cookie 数量。</div>
       </div>
 
       {% set platforms = [
@@ -219,6 +226,62 @@
     </a>
   </div>
 </form>
+
+<script>
+// ── Cookie format auto-detect preview ──────────────────────────────────────
+function detectCookieFormat(raw) {
+  raw = raw.trim();
+  if (!raw || raw === "__CLEAR__") return null;
+  if (raw.startsWith("[")) {
+    try {
+      const items = JSON.parse(raw);
+      if (Array.isArray(items)) {
+        const count = items.filter(i => i.name && i.value !== undefined).length;
+        return { fmt: "JSON", count };
+      }
+    } catch(e) {}
+  }
+  if (raw.includes("\n") && raw.includes("\t")) {
+    let count = 0;
+    raw.split("\n").forEach(line => {
+      line = line.trim();
+      if (!line || line.startsWith("#")) return;
+      const parts = line.split("\t");
+      if (parts.length >= 7 && parts[5]) count++;
+    });
+    if (count > 0) return { fmt: "Netscape", count };
+  }
+  const pairs = raw.split(/;\s*/).filter(p => p.includes("=") && p.trim());
+  if (pairs.length > 0) return { fmt: "Header String", count: pairs.length };
+  return null;
+}
+
+function updateCookiePreview(textarea) {
+  let preview = textarea.parentElement.querySelector(".cookie-preview");
+  if (!preview) {
+    preview = document.createElement("div");
+    preview.className = "cookie-preview mt-1";
+    textarea.insertAdjacentElement("afterend", preview);
+  }
+  const val = textarea.value;
+  if (!val || val === "__CLEAR__") { preview.innerHTML = ""; return; }
+  const result = detectCookieFormat(val);
+  if (!result) {
+    preview.innerHTML = `<span style="color:#f87171;font-size:.75rem"><i class="bi bi-exclamation-triangle me-1"></i>无法识别格式</span>`;
+  } else {
+    const color = result.fmt === "JSON" ? "#94a3b8" : (result.fmt === "Netscape" ? "#94a3b8" : "#4ade80");
+    const badge = result.fmt === "Header String" ? "bg-success" : "bg-secondary";
+    preview.innerHTML = `<span style="font-size:.75rem;color:${color}"><i class="bi bi-check-circle me-1" style="color:#4ade80"></i>识别为 <span class="badge ${badge}" style="font-size:.65rem">${result.fmt}</span>，检测到 <strong>${result.count}</strong> 条 Cookie → 保存时自动规范化</span>`;
+  }
+}
+
+document.querySelectorAll("textarea[name^='cookie_']").forEach(ta => {
+  ta.addEventListener("input",  () => updateCookiePreview(ta));
+  ta.addEventListener("paste",  () => setTimeout(() => updateCookiePreview(ta), 0));
+  // Run on load if field already has content
+  if (ta.value) updateCookiePreview(ta);
+});
+</script>
 
 {% if request.query_params.get('check') %}
 <div class="card mt-4" style="background:#1e2130;border-radius:.75rem">
