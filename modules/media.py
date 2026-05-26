@@ -142,6 +142,16 @@ def _get_ph():
     return _ph
 
 
+def _get_proxy() -> Optional[str]:
+    """Return the configured outbound proxy (WARP / SOCKS5), if any."""
+    return (
+        os.environ.get("HTTPS_PROXY")
+        or os.environ.get("HTTP_PROXY")
+        or os.environ.get("ALL_PROXY")
+        or None
+    )
+
+
 async def _get_cookie(url: str) -> Optional[str]:
     """Return the stored cookie for the URL's platform, or None."""
     from bot.database import get_bot_config
@@ -234,11 +244,12 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         # Fetch stored cookie for this platform (may be None)
         cookie = await _get_cookie(url)
+        proxy = _get_proxy()
 
-        # Parse metadata
+        # Parse metadata — pass proxy so Instaloader / non-yt-dlp parsers also use WARP
         try:
             result = await asyncio.wait_for(
-                ph.parse(url, cookie=cookie) if cookie else ph.parse(url),
+                ph.parse(url, proxy=proxy, cookie=cookie),
                 timeout=30,
             )
         except UnknownPlatform:

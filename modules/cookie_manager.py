@@ -44,16 +44,17 @@ _PLATFORM_DISPLAY: dict[str, str] = {
     "cookie_xiaohongshu": "小红书",
 }
 
-# A known public URL per platform for /testcookie
+# Known public post URLs for /testcookie <platform> [url] — must match parser patterns
+# Profile pages / home pages won't work; only use content post URLs here.
 _TEST_URLS: dict[str, str] = {
-    "instagram":   "https://www.instagram.com/instagram/",
-    "twitter":     "https://x.com/x",
+    # instagram: /p/ or /reel/ URLs only — no stable public post guaranteed; provide via arg
+    # twitter:   /status/<id> URLs only — provide via arg
     "bilibili":    "https://www.bilibili.com/video/BV1GJ411x7h7",
     "youtube":     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
     "tiktok":      "https://www.tiktok.com/@tiktok/video/7106594312292453675",
     "douyin":      "https://www.douyin.com/video/7376812765601591595",
     "kuaishou":    "https://www.kuaishou.com/short-video/3xkmwfe4kqhmmym",
-    "xiaohongshu": "https://www.xiaohongshu.com/explore",
+    # xiaohongshu: /explore/<post_id> or /discovery/item/<id> — provide via arg
 }
 
 _SLUG_TO_COOKIE_KEY: dict[str, str] = {
@@ -276,16 +277,21 @@ async def check_all_cookies(context) -> None:
 
 @owner_only
 async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Usage: /testcookie <platform> [url] — test stored cookie with ParseHub."""
+    """Usage: /testcookie <platform> [url]
+
+    Without URL: runs the HTTP auth check (fast, no ParseHub needed).
+    With URL:    parses the given URL via ParseHub using the stored cookie.
+    """
     msg = update.effective_message
     args = context.args or []
 
     if not args:
         platforms = " ".join(_SLUG_TO_COOKIE_KEY.keys())
         await msg.reply_text(
-            "用法：<code>/testcookie &lt;平台&gt; [自定义URL]</code>\n\n"
+            "用法：<code>/testcookie &lt;平台&gt; [内容链接]</code>\n\n"
             f"支持的平台：<code>{platforms}</code>\n\n"
-            "会用存储的 Cookie 尝试解析该平台的一个测试链接，并显示原始结果或错误信息。",
+            "不提供链接时做 HTTP 认证检测；提供具体内容链接（帖子/视频）时用 ParseHub 解析测试。\n\n"
+            "<b>注意</b>：链接必须是<b>内容页</b>（帖子/视频），不能是个人主页或首页。",
             parse_mode="HTML",
         )
         return
@@ -307,24 +313,83 @@ async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
+    display = _PLATFORM_DISPLAY.get(cookie_key, platform)
     test_url = args[1] if len(args) > 1 else _TEST_URLS.get(platform, "")
+
+    # ── Mode A: HTTP auth check (no URL provided or platform has no default URL) ─
     if not test_url:
-        await msg.reply_text(f"❌ 请提供测试 URL：<code>/testcookie {platform} &lt;URL&gt;</code>", parse_mode="HTML")
+        checker = _CHECKERS.get(cookie_key)
+        if not checker:
+            await msg.reply_text(
+                f"⬜ <b>{display}</b> 无内置 HTTP 检测端点\n\n"
+                f"请提供具体内容链接进行 ParseHub 解析测试：\n"
+                f"<code>/testcookie {platform} &lt;内容链接&gt;</code>\n\n"
+                f"<b>提示</b>：链接需为帖子/视频，不能是个人主页。\n"
+                f"  ✅ instagram.com/p/xxx 或 instagram.com/reel/xxx\n"
+                f"  ✅ x.com/用户名/status/数字\n"
+                f"  ✅ xiaohongshu.com/explore/帖子ID",
+                parse_mode="HTML",
+            )
+            return
+
+        status_msg = await msg.reply_text(
+            f"⏳ 正在对 {display} 做 HTTP 认证检测…",
+            parse_mode="HTML",
+        )
+        result = await checker(cookie)
+        if result is True:
+            await status_msg.edit_text(
+                f"✅ <b>{display} Cookie 有效</b>\n\nHTTP 认证检测通过。\n\n"
+                f"如需完整测试解析功能，提供一个真实内容链接：\n"
+                f"<code>/testcookie {platform} &lt;内容链接&gt;</code>",
+                parse_mode="HTML",
+            )
+        elif result is False:
+            await status_msg.edit_text(
+                f"🔴 <b>{display} Cookie 已失效</b>\n\nHTTP 认证检测返回 401/403。\n\n"
+                f"请重新导出 Cookie 并更新：\n"
+                f"<code>/setcookie {platform} &lt;新Cookie&gt;</code>",
+                parse_mode="HTML",
+            )
+        else:
+            await status_msg.edit_text(
+                f"⬜ <b>{display}</b> HTTP 检测未返回明确结果（非 200/401/403）\n\n"
+                f"请提供内容链接做 ParseHub 解析测试：\n"
+                f"<code>/testcookie {platform} &lt;内容链接&gt;</code>",
+                parse_mode="HTML",
+            )
         return
 
-    display = _PLATFORM_DISPLAY.get(cookie_key, platform)
-    status_msg = await msg.reply_text(
-        f"⏳ 正在用 {display} Cookie 解析测试链接…\n<code>{test_url[:80]}</code>",
-        parse_mode="HTML",
-    )
-
+    # ── Mode B: ParseHub parse test with the given/default URL ────────────────
+    # Validate that the URL matches a known ParseHub parser before trying
     try:
         from parsehub import ParseHub
         from parsehub.errors import UnknownPlatform, ParseError
         ph = ParseHub()
+        if not ph.get_parser(test_url):
+            await msg.reply_text(
+                f"❌ 该链接不是 <b>{display}</b> 支持的内容格式\n\n"
+                f"<code>{html.escape(test_url[:100])}</code>\n\n"
+                f"请使用<b>内容页链接</b>（帖子/视频），例如：\n"
+                f"  instagram.com/p/xxx 或 instagram.com/reel/xxx\n"
+                f"  x.com/用户名/status/数字\n"
+                f"  xiaohongshu.com/explore/帖子ID\n\n"
+                f"个人主页、首页等不被支持。",
+                parse_mode="HTML",
+            )
+            return
+    except Exception:
+        pass
 
+    status_msg = await msg.reply_text(
+        f"⏳ 正在用 {display} Cookie 解析…\n<code>{test_url[:80]}</code>",
+        parse_mode="HTML",
+    )
+
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY") or None
+    try:
         result = await asyncio.wait_for(
-            ph.parse(test_url, cookie=cookie),
+            ph.parse(test_url, proxy=proxy, cookie=cookie),
             timeout=30,
         )
 
