@@ -6,7 +6,7 @@
   <h4 class="fw-bold mb-0">Dashboard</h4>
 </div>
 
-{# ── Stats row ───────────────────────────────────────────── #}
+{# ── Stats row ──────────────────────────────────────────────── #}
 <div class="row g-3 mb-4">
   <div class="col-sm-6 col-lg-3">
     <div class="card stat-card h-100" style="background:#1e2130">
@@ -43,7 +43,7 @@
   </div>
 </div>
 
-{# ── Quick Actions + placeholder for service status ───────── #}
+{# ── Quick Actions + placeholder for service status ───────────── #}
 <div class="row g-3 mb-4">
   <div class="col-md-4">
     <div class="card h-100" style="background:#1e2130;border-radius:.75rem">
@@ -76,7 +76,6 @@
           </button>
         </div>
         <div id="health-grid">
-          {# Skeleton rows shown before JS loads #}
           {% for i in range(7) %}
           <div class="d-flex align-items-center py-2 border-bottom border-secondary border-opacity-25">
             <div class="placeholder-glow flex-grow-1">
@@ -97,6 +96,27 @@
       <h6 class="fw-semibold mb-3" id="health-detail-title">Test Result</h6>
       <div id="health-detail-body" class="font-monospace small"></div>
     </div>
+  </div>
+</div>
+
+{# ── 媒体解析测试 ────────────────────────────────────── #}
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-3"><i class="bi bi-play-circle me-1"></i>媒体解析测试</h6>
+    <div class="input-group mb-2">
+      <input id="mediaTestUrl" type="url" class="form-control bg-dark text-light border-secondary"
+             placeholder="粘贴媒体链接（YouTube / B站 / TikTok / 小红书…）">
+      <button class="btn btn-primary" onclick="testMedia()">解析</button>
+    </div>
+    <div class="mb-2 d-flex gap-1 flex-wrap">
+      <button class="btn btn-sm btn-outline-secondary" onclick="setMediaUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ')">YouTube</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="setMediaUrl('https://www.bilibili.com/video/BV1GJ411x7h7')">B站</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="setMediaUrl('https://www.tiktok.com/@tiktok/video/6584647400055095557')">TikTok</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="setMediaUrl('https://weibo.com/tv/show/1034:5003268558045185')">微博</button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="setMediaUrl('https://www.instagram.com/p/C0000000000/')">Instagram</button>
+    </div>
+    <pre id="mediaTestResult" class="bg-dark text-light p-2 rounded border border-secondary"
+         style="min-height:70px;white-space:pre-wrap;font-size:.78rem;max-height:320px;overflow-y:auto">请输入链接并点击解析</pre>
   </div>
 </div>
 
@@ -161,7 +181,7 @@ function renderRow(key, data, liveResult) {
   const setupUrl = SETUP_URLS[key];
   const status = data.status;
 
-  let badgeStatus = status;  // ok / missing / error
+  let badgeStatus = status;
   let badgeLabel  = null;
   if (liveResult) {
     badgeStatus = liveResult.status === "ok" ? "verified" : "failed";
@@ -219,11 +239,7 @@ function renderGrid() {
 
 async function testService(key) {
   const btn = document.getElementById(`btn-${key}`);
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "…";
-  }
-  // Replace badge with "testing"
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
   const row = document.getElementById(`row-${key}`);
   if (row) {
     const badge = row.querySelector(".svc-badge");
@@ -234,7 +250,6 @@ async function testService(key) {
     const r = await fetch(`/health/check/${key}`, {method:"POST"});
     const result = await r.json();
 
-    // Re-render this row with live result
     if (_healthData[key]) {
       const newRow = document.createElement("div");
       newRow.innerHTML = renderRow(key, _healthData[key], result);
@@ -242,7 +257,6 @@ async function testService(key) {
       if (oldRow) oldRow.replaceWith(newRow.firstElementChild);
     }
 
-    // Show detail panel
     const detail = document.getElementById("health-detail");
     const detailTitle = document.getElementById("health-detail-title");
     const detailBody  = document.getElementById("health-detail-body");
@@ -256,12 +270,30 @@ async function testService(key) {
   }
 }
 
-// CSS spin animation
+function setMediaUrl(u) { document.getElementById('mediaTestUrl').value = u; }
+
+async function testMedia() {
+  const url = document.getElementById('mediaTestUrl').value.trim();
+  const el = document.getElementById('mediaTestResult');
+  if (!url) { el.textContent = '请输入链接'; return; }
+  el.textContent = '⏳ 解析中… (最长 30 秒)';
+  try {
+    const r = await fetch('/health/check/media', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const d = await r.json();
+    el.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    el.textContent = '请求失败: ' + e.message;
+  }
+}
+
 const styleEl = document.createElement("style");
 styleEl.textContent = `.spin { animation: spin .8s linear infinite; display:inline-block; } @keyframes spin { to { transform: rotate(360deg); } }`;
 document.head.appendChild(styleEl);
 
-// Load on page ready
 document.addEventListener("DOMContentLoaded", loadHealth);
 </script>
 

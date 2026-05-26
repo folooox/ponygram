@@ -10,6 +10,7 @@ Start via main.py when WEB_ENABLED=true.  Provides:
   /settings   — bot-level API key configuration
   /health     — JSON service health (used by dashboard JS)
   /health/check/{service} — live-test a specific service
+  /health/check/media     — test media URL parsing via ParseHub
   /login      — password form (WEB_SECRET from .env)
   /logout     — clear session
 """
@@ -18,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import secrets
+import traceback as _traceback
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,6 +58,24 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _secret: str = ""
 _bot: Any = None  # telegram.Bot instance, injected at startup
+
+# domain → cookie key (mirrors media.py)
+_MEDIA_COOKIE_MAP = {
+    "instagram.com":   "cookie_instagram",
+    "twitter.com":     "cookie_twitter",
+    "x.com":           "cookie_twitter",
+    "t.co":            "cookie_twitter",
+    "bilibili.com":    "cookie_bilibili",
+    "b23.tv":          "cookie_bilibili",
+    "douyin.com":      "cookie_douyin",
+    "tiktok.com":      "cookie_tiktok",
+    "vm.tiktok.com":   "cookie_tiktok",
+    "kuaishou.com":    "cookie_kuaishou",
+    "xiaohongshu.com": "cookie_xiaohongshu",
+    "xhslink.com":     "cookie_xiaohongshu",
+    "youtube.com":     "cookie_youtube",
+    "youtu.be":        "cookie_youtube",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +281,72 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             "detail": v["detail"],
             "testable": v["testable"],
         } for k, v in services.items()})
+
+    @app.post("/health/check/media")
+    async def health_check_media(request: Request, session: Optional[str] = Cookie(None)):
+        """Live-test media URL parsing via ParseHub. Body: {url: string}"""
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            url = (body.get("url") or "").strip()
+        except Exception:
+            return JSONResponse({"status": "error", "detail": "Invalid JSON body"}, status_code=400)
+        if not url:
+            return JSONResponse({"status": "error", "detail": "url is required"}, status_code=400)
+
+        proxy = (
+            os.environ.get("HTTPS_PROXY")
+            or os.environ.get("HTTP_PROXY")
+            or os.environ.get("ALL_PROXY")
+        )
+
+        # fetch cookie for this platform
+        cookie = None
+        url_lower = url.lower()
+        for domain, key in _MEDIA_COOKIE_MAP.items():
+            if domain in url_lower:
+                cookie = await get_bot_config(key)
+                break
+
+        try:
+            from parsehub import ParseHub
+            from parsehub.errors import ParseError, UnknownPlatform
+
+            ph = ParseHub()
+            result = await asyncio.wait_for(
+                ph.parse(url, proxy=proxy, cookie=cookie),
+                timeout=30,
+            )
+            platform = getattr(getattr(result, "platform", None), "display_name", "Unknown")
+            media = result.media
+            media_list = media if isinstance(media, list) else ([media] if media else [])
+            media_info = [
+                {"type": type(m).__name__, "url": str(getattr(m, "url", ""))[:120]}
+                for m in media_list
+            ]
+            return JSONResponse({
+                "status": "ok",
+                "platform": platform,
+                "title": (getattr(result, "title", "") or "")[:120],
+                "result_type": type(result).__name__,
+                "media_count": len(media_info),
+                "media": media_info[:5],
+                "proxy_used": proxy or "none",
+                "cookie_used": bool(cookie),
+            })
+        except Exception as e:
+            name = type(e).__name__
+            detail = str(e)[:400]
+            tb = _traceback.format_exc()[-600:]
+            return JSONResponse({
+                "status": "error",
+                "error_type": name,
+                "detail": detail,
+                "traceback": tb,
+                "proxy_used": proxy or "none",
+                "cookie_used": bool(cookie),
+            })
 
     @app.post("/health/check/{service}")
     async def health_check_service(service: str, session: Optional[str] = Cookie(None)):
@@ -586,7 +673,6 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
     async def rss_delete(feed_id: int, session: Optional[str] = Cookie(None)):
         if not _authed(session):
             return _redirect_login()
-        # Admin delete: bypass chat_id check by using a raw session delete
         async with get_session() as s:
             from bot.database import RssSent
             from sqlalchemy import delete as sa_delete
