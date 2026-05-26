@@ -328,7 +328,7 @@ def _format_price(results: List[Dict], query: str) -> str:
         elif region == "US":
             flag, currency = "🇺🇸", "US$"
         elif region == "CN":
-            flag, currency = "🇨\ud83c\�\udd33", "¥"
+            flag, currency = "🇨🇳", "¥"
         else:
             flag, currency = f"[{region}]", ""
         for game in region_data["games"][:1]:
