@@ -260,7 +260,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             "antispam_window": (1, 300),
             "warn_limit": (1, 20),
         }
-        text_fields = ["welcome_text", "goodbye_text"]
+        text_fields = ["welcome_text", "goodbye_text", "rules_text"]
 
         kwargs: dict = {}
         for field in bool_fields:
@@ -417,7 +417,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         form = await request.form()
-        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key"]
+        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key", "psn_npsso"]
         cookie_keys = [
             "cookie_instagram", "cookie_twitter", "cookie_bilibili",
             "cookie_douyin", "cookie_tiktok", "cookie_kuaishou",

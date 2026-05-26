@@ -358,6 +358,21 @@ async def cmd_unpin(update: Update, context) -> None:
         await msg.reply_text(f"Failed to unpin: {e}")
 
 
+async def cmd_rules(update: Update, context) -> None:
+    """/rules — show this group's rules (set via Web Admin)."""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+
+    settings = await get_group_settings(chat.id)
+    if settings.rules_text and settings.rules_text.strip():
+        text = f"📋 <b>群规则</b>\n\n{settings.rules_text}"
+    else:
+        text = "📋 本群暂未设置规则。"
+    await msg.reply_text(text, parse_mode=ParseMode.HTML)
+
+
 def setup(application: Application) -> None:
     cmds = [
         ("mute",       cmd_mute,       "Mute a user [duration: 1h/30m/2d]",  True),
@@ -370,6 +385,7 @@ def setup(application: Application) -> None:
         ("clearwarns", cmd_clearwarns, "Clear all warnings for a user",       True),
         ("pin",        cmd_pin,        "Pin a message [loud]",                True),
         ("unpin",      cmd_unpin,      "Unpin a message",                     True),
+        ("rules",      cmd_rules,      "Show group rules",                    False),
     ]
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)

@@ -25,9 +25,11 @@
       </p>
 
       {% set api_keys = [
-        ("claude_api_key",  "bi-robot",      "Claude API Key",  "for AI dialogue",           "sk-ant-…"),
-        ("tmdb_api_key",    "bi-film",        "TMDB API Key",    "for movie/TV inline search", "your TMDB key"),
-        ("lastfm_api_key",  "bi-music-note",  "Last.fm API Key", "for music inline search",   "your Last.fm key"),
+        ("claude_api_key",  "bi-robot",        "Claude API Key",    "for AI dialogue",             "sk-ant-…"),
+        ("tmdb_api_key",    "bi-film",          "TMDB API Key",      "for movie/TV inline search",  "your TMDB key"),
+        ("lastfm_api_key",  "bi-music-note",    "Last.fm API Key",   "for music inline search",     "your Last.fm key"),
+        ("rawg_api_key",    "bi-controller",    "RAWG.io API Key",   "for PS game search (@bot game)", "your RAWG key"),
+        ("psn_npsso",       "bi-person-badge",  "PSN NPSSO Token",   "for /psn user profile and trophies", "paste npsso token here"),
       ] %}
 
       {% for key, icon, label, hint, ph in api_keys %}

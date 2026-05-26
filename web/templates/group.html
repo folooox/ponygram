@@ -153,10 +153,16 @@
                       rows="3" placeholder="Leave empty for default message">{{ g.welcome_text or '' }}</textarea>
           </div>
 
-          <div class="mb-0">
+          <div class="mb-3">
             <label class="form-label small"><i class="bi bi-door-closed text-secondary me-1"></i> Goodbye message</label>
             <textarea class="form-control bg-dark border-secondary text-light" name="goodbye_text"
                       rows="3" placeholder="Leave empty for default message">{{ g.goodbye_text or '' }}</textarea>
+          </div>
+
+          <div class="mb-0">
+            <label class="form-label small"><i class="bi bi-list-ol text-secondary me-1"></i> 群规则 <span class="text-secondary">(displayed by /rules)</span></label>
+            <textarea class="form-control bg-dark border-secondary text-light" name="rules_text"
+                      rows="5" placeholder="Enter group rules here (supports HTML: &lt;b&gt;, &lt;i&gt;, &lt;a&gt;)">{{ g.rules_text or '' }}</textarea>
           </div>
         </div>
       </div>
