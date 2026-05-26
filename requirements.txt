@@ -8,6 +8,9 @@ structlog==24.4.0
 feedparser==6.0.11
 html2text==2024.2.26
 parsehub>=0.1.0
+PySocks>=1.7.1
+httpx[socks]>=0.27.0
+aiohttp-socks>=0.8.4
 anthropic>=0.40.0
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0

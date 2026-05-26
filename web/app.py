@@ -31,6 +31,7 @@ from bot.database import (
     UserWarn,
     add_rss_feed,
     add_to_blacklist,
+    delete_bot_config,
     get_all_bot_configs,
     get_all_rss_feeds,
     get_bot_config,
@@ -415,7 +416,6 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         if not _authed(session):
             return _redirect_login()
 
-        from bot.database import delete_bot_config
         form = await request.form()
         api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key"]
         cookie_keys = [
