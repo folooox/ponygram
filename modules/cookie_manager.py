@@ -386,9 +386,10 @@ async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         parse_mode="HTML",
     )
 
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY") or None
     try:
         result = await asyncio.wait_for(
-            ph.parse(test_url, cookie=cookie),
+            ph.parse(test_url, proxy=proxy, cookie=cookie),
             timeout=30,
         )
 
