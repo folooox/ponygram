@@ -27,7 +27,8 @@
 {% if not groups %}
 <div class="text-secondary">No groups yet. Search above to add a group.</div>
 {% else %}
-<div class="card" style="background:#1e2130;border-radius:.75rem">
+{# Desktop: table view #}
+<div class="card d-none d-md-block" style="background:#1e2130;border-radius:.75rem">
   <div class="table-responsive">
     <table class="table table-dark table-hover mb-0" style="background:transparent">
       <thead>
@@ -68,6 +69,35 @@
       </tbody>
     </table>
   </div>
+</div>
+
+{# Mobile: card list #}
+<div class="d-md-none d-flex flex-column gap-2">
+  {% for g in groups %}
+  <a href="/groups/{{ g.chat_id }}" class="card text-decoration-none" style="background:#1e2130;border-radius:.6rem;border:1px solid rgba(255,255,255,.05)">
+    <div class="card-body py-3 px-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <span class="font-monospace text-light">{{ g.chat_id }}</span>
+        {% if g.is_active %}
+        <span class="badge bg-success">active</span>
+        {% else %}
+        <span class="badge bg-secondary">inactive</span>
+        {% endif %}
+      </div>
+      <div class="d-flex flex-wrap gap-1" style="font-size:.7rem">
+        {% if g.welcome_enabled %}<span class="badge bg-success">welcome</span>{% endif %}
+        {% if g.verification_enabled %}<span class="badge bg-success">verify</span>{% endif %}
+        {% if g.antispam_enabled %}<span class="badge bg-success">anti-spam</span>{% endif %}
+        {% if g.antiad_enabled %}<span class="badge bg-success">anti-ad</span>{% endif %}
+        {% if g.dlmode_enabled %}<span class="badge bg-success">dl</span>{% endif %}
+        {% if g.aichat_enabled %}<span class="badge bg-success">ai</span>{% endif %}
+        {% if not (g.welcome_enabled or g.verification_enabled or g.antispam_enabled or g.dlmode_enabled or g.aichat_enabled) %}
+        <span class="text-secondary small">all modules off</span>
+        {% endif %}
+      </div>
+    </div>
+  </a>
+  {% endfor %}
 </div>
 {% endif %}
 

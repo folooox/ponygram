@@ -101,20 +101,24 @@
 </div>
 
 <style>
-.svc-row { display:flex; align-items:center; padding:.55rem 0; border-bottom:1px solid rgba(255,255,255,.07); }
+.svc-row { display:flex; align-items:center; padding:.55rem 0; border-bottom:1px solid rgba(255,255,255,.07); flex-wrap:wrap; gap:.4rem .5rem; }
 .svc-row:last-child { border-bottom:none; }
-.svc-icon { width:1.6rem; text-align:center; font-size:.95rem; }
-.svc-name { font-size:.87rem; font-weight:500; min-width:140px; }
-.svc-detail { font-size:.78rem; color:#64748b; flex:1; }
-.svc-badge { font-size:.7rem; padding:.25rem .5rem; border-radius:4px; white-space:nowrap; }
+.svc-icon { width:1.6rem; text-align:center; font-size:.95rem; flex-shrink:0; }
+.svc-name { font-size:.87rem; font-weight:500; min-width:120px; flex-shrink:0; }
+.svc-detail { font-size:.78rem; color:#64748b; flex:1; min-width:0; word-break:break-word; }
+.svc-badge { font-size:.7rem; padding:.25rem .5rem; border-radius:4px; white-space:nowrap; flex-shrink:0; }
 .badge-ok      { background:#16a34a22; color:#4ade80; border:1px solid #16a34a55; }
 .badge-missing { background:#64748b22; color:#94a3b8; border:1px solid #64748b55; }
 .badge-error   { background:#dc262622; color:#f87171; border:1px solid #dc262655; }
 .badge-testing { background:#2563eb22; color:#60a5fa; border:1px solid #2563eb55; }
 .badge-verified{ background:#0d9488aa; color:#5eead4; border:1px solid #0d948899; }
-.btn-test      { font-size:.72rem; padding:.2rem .55rem; margin-left:.5rem; }
-.setup-link    { font-size:.72rem; color:#3b82f6; text-decoration:none; margin-left:.4rem; }
+.btn-test      { font-size:.72rem; padding:.2rem .55rem; flex-shrink:0; }
+.setup-link    { font-size:.72rem; color:#3b82f6; text-decoration:none; margin-left:.4rem; white-space:nowrap; }
 .setup-link:hover { text-decoration:underline; }
+@media (max-width: 480px) {
+  .svc-name { min-width:100%; font-size:.9rem; }
+  .svc-detail { width:100%; flex:0 0 100%; margin-top:-.2rem; }
+}
 </style>
 
 <script>
