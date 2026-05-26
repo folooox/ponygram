@@ -25,19 +25,19 @@
     </h6>
     <form method="post" action="/rss/add">
       <div class="row g-2">
-        <div class="col-md-3">
+        <div class="col-12 col-md-3">
           <input type="number" class="form-control bg-dark border-secondary text-light"
                  name="chat_id" placeholder="Chat ID" required>
         </div>
-        <div class="col-md-5">
+        <div class="col-12 col-md-5">
           <input type="url" class="form-control bg-dark border-secondary text-light"
                  name="url" placeholder="https://example.com/feed.xml" required>
         </div>
-        <div class="col-md-3">
+        <div class="col-8 col-md-3">
           <input type="text" class="form-control bg-dark border-secondary text-light"
                  name="label" placeholder="Label (optional)">
         </div>
-        <div class="col-md-1">
+        <div class="col-4 col-md-1">
           <button type="submit" class="btn btn-primary w-100">
             <i class="bi bi-plus-lg"></i>
           </button>
@@ -51,7 +51,7 @@
 {% if not feeds %}
 <div class="text-secondary">No RSS feeds yet.</div>
 {% else %}
-<div class="card" style="background:#1e2130;border-radius:.75rem">
+<div class="card d-none d-md-block" style="background:#1e2130;border-radius:.75rem">
   <div class="table-responsive">
     <table class="table table-dark table-hover mb-0" style="background:transparent">
       <thead>
@@ -111,6 +111,48 @@
       </tbody>
     </table>
   </div>
+</div>
+
+{# Mobile: card list #}
+<div class="d-md-none d-flex flex-column gap-2">
+  {% for f in feeds %}
+  <div class="card" style="background:#1e2130;border-radius:.6rem">
+    <div class="card-body py-3 px-3">
+      <div class="d-flex align-items-start justify-content-between mb-2 gap-2">
+        <div style="min-width:0;flex:1">
+          <div class="d-flex align-items-center gap-2 mb-1">
+            <span class="text-secondary small">#{{ f.id }}</span>
+            <span class="font-monospace small">{{ f.chat_id }}</span>
+            {% if f.paused %}
+            <span class="badge bg-secondary" style="font-size:.65rem">paused</span>
+            {% else %}
+            <span class="badge bg-success" style="font-size:.65rem">active</span>
+            {% endif %}
+          </div>
+          {% if f.label %}<div class="small">{{ f.label }}</div>{% endif %}
+          <div class="text-secondary" style="font-size:.7rem;word-break:break-all">{{ f.url }}</div>
+          <div class="text-secondary" style="font-size:.7rem">
+            <i class="bi bi-clock me-1"></i>{{ f.last_fetched.strftime('%m-%d %H:%M') if f.last_fetched else 'never' }}
+          </div>
+        </div>
+        <div class="d-flex flex-column gap-1">
+          {% if f.paused %}
+          <form method="post" action="/rss/{{ f.id }}/resume">
+            <button class="btn btn-sm btn-outline-success" title="Resume"><i class="bi bi-play"></i></button>
+          </form>
+          {% else %}
+          <form method="post" action="/rss/{{ f.id }}/pause">
+            <button class="btn btn-sm btn-outline-secondary" title="Pause"><i class="bi bi-pause"></i></button>
+          </form>
+          {% endif %}
+          <form method="post" action="/rss/{{ f.id }}/delete" onsubmit="return confirm('Delete this feed?')">
+            <button class="btn btn-sm btn-outline-danger" title="Delete"><i class="bi bi-trash"></i></button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
 </div>
 {% endif %}
 {% endblock %}
