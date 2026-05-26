@@ -71,6 +71,7 @@ class GroupSettings(Base):
     warn_limit = Column(Integer, default=3)
     dlmode_enabled = Column(Boolean, default=True)     # auto media URL detection (on by default)
     aichat_enabled = Column(Boolean, default=True)     # AI auto-reply (on by default)
+    rules_text = Column(Text, nullable=True)           # group rules displayed by /rules command
 
 
 class Blacklist(Base):
@@ -155,6 +156,7 @@ async def _migrate(conn) -> None:
         ("group_settings", "goodbye_text",     "TEXT"),
         ("group_settings", "dlmode_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
         ("group_settings", "aichat_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
+        ("group_settings", "rules_text",       "TEXT"),
     ]
 
     for table, col, definition in migrations:

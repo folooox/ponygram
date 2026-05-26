@@ -17,36 +17,132 @@
   {# ── API Keys ─────────────────────────────────────────── #}
   <div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
     <div class="card-body">
-      <h6 class="fw-semibold mb-3 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+      <h6 class="fw-semibold mb-1 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
         API Keys
       </h6>
-      <p class="text-secondary small mb-4">
-        Leave blank to keep the current value.
-      </p>
+      <p class="text-secondary small mb-4">Leave blank to keep the current value.</p>
 
-      {% set api_keys = [
-        ("claude_api_key",  "bi-robot",      "Claude API Key",  "for AI dialogue",           "sk-ant-…"),
-        ("tmdb_api_key",    "bi-film",        "TMDB API Key",    "for movie/TV inline search", "your TMDB key"),
-        ("lastfm_api_key",  "bi-music-note",  "Last.fm API Key", "for music inline search",   "your Last.fm key"),
-      ] %}
-
-      {% for key, icon, label, hint, ph in api_keys %}
+      {# Claude #}
       <div class="mb-4">
-        <label class="form-label">
-          <i class="bi {{ icon }} text-secondary me-1"></i>
-          <strong>{{ label }}</strong>
-          <span class="text-secondary small ms-2">({{ hint }})</span>
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-robot text-secondary"></i>
+          <strong>Claude API Key</strong>
+          <span class="text-secondary small">(AI dialogue)</span>
+          {% if configs.get('claude_api_key') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
         </label>
-        <input type="password" class="form-control bg-dark border-secondary text-light"
-               name="{{ key }}"
-               placeholder="{% if configs.get(key) %}••••••••••••••••{% else %}{{ ph }}{% endif %}">
-        {% if configs.get(key) %}
-        <div class="form-text text-success small mt-1"><i class="bi bi-check-circle me-1"></i>Key is set</div>
-        {% else %}
-        <div class="form-text text-secondary small mt-1">Not configured</div>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <i class="bi bi-info-circle me-1" style="color:#7eb8f7"></i>
+          前往 <a href="https://console.anthropic.com" target="_blank" class="text-info">console.anthropic.com</a>
+          → API Keys → Create Key（仅显示一次，请立即复制）<br>
+          <span class="text-secondary">格式：<code>sk-ant-api03-</code> 开头，约 100 个字符</span>
+        </div>
+        <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+               name="claude_api_key" style="font-size:.82rem"
+               placeholder="{% if configs.get('claude_api_key') %}••••••••••••••••{% else %}sk-ant-api03-…{% endif %}">
+      </div>
+
+      {# TMDB #}
+      <div class="mb-4">
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-film text-secondary"></i>
+          <strong>TMDB API Key</strong>
+          <span class="text-secondary small">(@bot movie / tv)</span>
+          {% if configs.get('tmdb_api_key') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
+        </label>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <i class="bi bi-info-circle me-1" style="color:#7eb8f7"></i>
+          注册 <a href="https://www.themoviedb.org" target="_blank" class="text-info">themoviedb.org</a>
+          → 账号设置 → API → 申请 Developer Key → 填写应用信息（个人用途即可）<br>
+          <span class="text-secondary">格式：32 位十六进制，如 <code>a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4</code>（不含前缀）</span>
+        </div>
+        <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+               name="tmdb_api_key" style="font-size:.82rem"
+               placeholder="{% if configs.get('tmdb_api_key') %}••••••••••••••••{% else %}32位十六进制，不含前缀{% endif %}">
+      </div>
+
+      {# Last.fm #}
+      <div class="mb-4">
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-music-note text-secondary"></i>
+          <strong>Last.fm API Key</strong>
+          <span class="text-secondary small">(@bot music / artist)</span>
+          {% if configs.get('lastfm_api_key') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
+        </label>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <i class="bi bi-info-circle me-1" style="color:#7eb8f7"></i>
+          前往 <a href="https://www.last.fm/api/account/create" target="_blank" class="text-info">last.fm/api/account/create</a>
+          → 填写应用名称 → 复制 API key（不是 Shared Secret）<br>
+          <span class="text-secondary">格式：32 位十六进制</span>
+        </div>
+        <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+               name="lastfm_api_key" style="font-size:.82rem"
+               placeholder="{% if configs.get('lastfm_api_key') %}••••••••••••••••{% else %}32位十六进制{% endif %}">
+      </div>
+
+      {# RAWG #}
+      <div class="mb-4">
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-controller text-secondary"></i>
+          <strong>RAWG.io API Key</strong>
+          <span class="text-secondary small">(@bot game — PS4/PS5 游戏搜索)</span>
+          {% if configs.get('rawg_api_key') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
+        </label>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <i class="bi bi-info-circle me-1" style="color:#7eb8f7"></i>
+          前往 <a href="https://rawg.io/apidocs" target="_blank" class="text-info">rawg.io/apidocs</a>
+          → 点击"Get API Key" → 免费注册（无需信用卡）→ 注册后 Key 立即显示在个人页面<br>
+          <span class="text-secondary">格式：40 位十六进制 &nbsp;免费额度：200,000 次/月</span>
+        </div>
+        <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+               name="rawg_api_key" style="font-size:.82rem"
+               placeholder="{% if configs.get('rawg_api_key') %}••••••••••••••••{% else %}40位十六进制{% endif %}">
+      </div>
+
+      {# PSN NPSSO #}
+      <div class="mb-2">
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-person-badge text-secondary"></i>
+          <strong>PSN NPSSO Token</strong>
+          <span class="text-secondary small">(/psn /trophy — 用户档案和奖杯)</span>
+          {% if configs.get('psn_npsso') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
+        </label>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <div class="fw-semibold mb-1" style="color:#7eb8f7"><i class="bi bi-info-circle me-1"></i>获取步骤</div>
+          <ol class="mb-1 ps-3" style="color:#adb5bd">
+            <li>浏览器登录 <a href="https://store.playstation.com" target="_blank" class="text-info">store.playstation.com</a></li>
+            <li>在<b>同一浏览器</b>新标签页打开：<code><a href="https://ca.account.sony.com/api/v1/ssocookie" target="_blank" class="text-info">ca.account.sony.com/api/v1/ssocookie</a></code></li>
+            <li>页面显示 JSON：<code>{"npsso":"<b>xxxxxxxx…</b>"}</code></li>
+            <li>复制引号内的 64 位字符串，粘贴到下方</li>
+          </ol>
+          <div style="color:#6c757d">约 2 个月或退出 PSN 后失效，失效重复以上步骤即可</div>
+        </div>
+        <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+               name="psn_npsso" style="font-size:.82rem"
+               placeholder="{% if configs.get('psn_npsso') %}••••••••••••••••{% else %}64位字母数字混合{% endif %}">
+        {% if configs.get('psn_npsso') %}
+        <div class="form-text text-success small mt-1"><i class="bi bi-shield-check me-1"></i>Token 已保存</div>
         {% endif %}
       </div>
-      {% endfor %}
 
     </div>
   </div>
@@ -59,17 +155,16 @@
       </h6>
       <p class="text-secondary small mb-3">
         部分平台（Instagram、Twitter/X 等）需要登录 Cookie 才能解析受限内容。
-        Cookie 失效时 bot 会自动通知 Owner，并可用 <code>/setcookie</code> 命令在 Telegram 里直接更新。
       </p>
       <div class="alert py-2 mb-4" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.82rem">
         <div class="fw-semibold mb-1" style="color:#7eb8f7"><i class="bi bi-info-circle me-1"></i>如何获取 Cookie</div>
         <ol class="mb-1 ps-3" style="color:#adb5bd">
-          <li>浏览器安装 <a href="https://cookie-editor.com/" target="_blank" class="text-info">Cookie-Editor</a> 插件</li>
+          <li>浏览器安装 <a href="https://cookie-editor.com/" target="_blank" class="text-info">Cookie-Editor</a> 插件（Chrome / Firefox）</li>
           <li>登录对应平台网页版</li>
           <li>点击插件图标 → 选择 <strong>Export → Header String</strong></li>
-          <li>复制内容粘贴到下方输入框，或发送 <code>/setcookie &lt;平台&gt; &lt;内容&gt;</code> 给 bot</li>
+          <li>复制内容粘贴到下方对应输入框</li>
         </ol>
-        <div style="color:#6c757d">Cookie 会存储在数据库中，失效时 bot 自动通知 Owner</div>
+        <div style="color:#6c757d">Cookie 格式示例：<code>sessionid=abc123; csrftoken=xyz456; ds_user_id=789…</code></div>
       </div>
 
       {% set platforms = [
@@ -119,7 +214,56 @@
     <button type="submit" class="btn btn-primary">
       <i class="bi bi-floppy me-1"></i> 保存
     </button>
+    <a href="/settings?check=1" class="btn btn-outline-secondary ms-2">
+      <i class="bi bi-arrow-repeat me-1"></i> 验证所有 Key
+    </a>
   </div>
 </form>
+
+{% if request.query_params.get('check') %}
+<div class="card mt-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-3">API Key 验证结果</h6>
+    <div id="verify-results">
+      <div class="text-secondary small"><i class="bi bi-hourglass-split me-1"></i> 正在测试…</div>
+    </div>
+  </div>
+</div>
+<script>
+const services = ["telegram", "claude", "tmdb", "lastfm", "rawg", "psn", "ytdlp"];
+const labels   = {
+  telegram: "Telegram Bot", claude: "Claude AI", tmdb: "TMDB",
+  lastfm: "Last.fm", rawg: "RAWG.io", psn: "PSN", ytdlp: "yt-dlp",
+};
+
+async function runVerify() {
+  const container = document.getElementById("verify-results");
+  container.innerHTML = "";
+  for (const svc of services) {
+    const row = document.createElement("div");
+    row.className = "d-flex align-items-center py-2 border-bottom border-secondary border-opacity-25";
+    row.innerHTML = `<span style="min-width:140px;font-size:.85rem">${labels[svc]}</span><span class="text-secondary small ms-2">⟳ 测试中…</span>`;
+    container.appendChild(row);
+
+    try {
+      const r = await fetch(`/health/check/${svc}`, {method:"POST"});
+      const data = await r.json();
+      const ok = data.status === "ok";
+      const color = ok ? "#4ade80" : (data.status === "missing" ? "#94a3b8" : "#f87171");
+      const icon  = ok ? "✔" : (data.status === "missing" ? "—" : "✕");
+      row.innerHTML = `
+        <span style="min-width:140px;font-size:.85rem">${labels[svc]}</span>
+        <span style="color:${color};font-size:.82rem;margin-left:.5rem">${icon} ${data.detail || ""}</span>
+      `;
+    } catch(e) {
+      row.innerHTML = `<span style="min-width:140px;font-size:.85rem">${labels[svc]}</span><span class="text-danger small ms-2">请求失败</span>`;
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+
+document.addEventListener("DOMContentLoaded", runVerify);
+</script>
+{% endif %}
 
 {% endblock %}

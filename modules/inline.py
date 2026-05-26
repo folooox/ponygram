@@ -27,7 +27,9 @@ _HELP_TEXT = (
     "  <b>tv</b> &lt;title&gt;\n"
     "  <b>book</b> &lt;query&gt;\n"
     "  <b>music</b> &lt;artist - track&gt;\n"
-    "  <b>artist</b> &lt;name&gt;"
+    "  <b>artist</b> &lt;name&gt;\n"
+    "  <b>game</b> &lt;title&gt;  — PS4/PS5 game search\n"
+    "  <b>psn</b> &lt;psn_id&gt;  — PSN user profile"
 )
 
 
@@ -127,6 +129,42 @@ async def on_inline_query(update: Update, context) -> None:
                 name = artist.get("name", rest)
                 text = _format_artist(artist, top_tracks)
                 results.append(_result(name, text, "Last.fm artist"))
+
+        elif prefix == "game" and rest:
+            from modules.psn import search_games, _format_game
+            items = await search_games(rest)
+            if items is None:
+                results.append(_result("⚠️ API key not configured",
+                                       "RAWG.io API key not set. Configure it in Web Admin → Settings.", ""))
+            elif not items:
+                results.append(_result(f"No games for '{rest}'", "No PS4/PS5 games found.", ""))
+            else:
+                for item in items[:5]:
+                    name = item.get("name", "Unknown")
+                    released = (item.get("released") or "")[:4]
+                    rating = item.get("rating", 0)
+                    desc = f"{released}  ⭐{rating:.1f}" if released else (f"⭐{rating:.1f}" if rating else "")
+                    text = _format_game(item)
+                    results.append(_result(name, text, desc))
+
+        elif prefix == "psn" and rest:
+            from modules.psn import get_psn_profile, _format_psn_profile
+            from bot.database import get_bot_config
+            npsso = await get_bot_config("psn_npsso")
+            if not npsso:
+                results.append(_result("⚠️ PSN NPSSO not configured",
+                                       "PSN NPSSO Token not set. Configure it in Web Admin → Settings.", ""))
+            else:
+                try:
+                    profile = await get_psn_profile(rest)
+                    if profile:
+                        text = _format_psn_profile(profile)
+                        results.append(_result(f"PSN: {rest}", text, "PSN user profile"))
+                    else:
+                        results.append(_result(f"User '{rest}' not found",
+                                               f"PSN user <b>{rest}</b> not found.", ""))
+                except Exception as ex:
+                    results.append(_result("Error fetching PSN profile", str(ex), ""))
 
         else:
             results.append(_result("How to use inline mode", _HELP_TEXT, "Type a prefix + query"))

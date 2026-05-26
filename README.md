@@ -1,106 +1,289 @@
 # Ponygram Bot
 
-A modular, async Telegram bot built with [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) v21.
+A modular, async Telegram bot with group management, AI dialogue (Claude), media parsing, RSS, and PlayStation game queries.
+
+**Web Admin UI built-in** — manage everything from a browser, no SSH required.
+
+---
 
 ## Quick Start
 
 ```bash
-# 1. Clone and install dependencies
+# 1. Clone and install
+git clone https://github.com/folooox/ponygram
+cd ponygram
 pip install -r requirements.txt
 
-# 2. Configure environment
+# 2. Copy and edit config
 cp .env.example .env
-# Edit .env — at minimum set BOT_TOKEN (get one from @BotFather)
+nano .env   # at minimum: BOT_TOKEN + OWNER_ID + WEB_SECRET
 
 # 3. Run
 python main.py
 ```
 
-## Features
+Open `http://localhost:8080` → log in with `WEB_SECRET` → start configuring.
 
-### Group Management
-| Command | Description |
-|---|---|
-| `/mute [@user\|id] [1h\|30m\|2d]` | Restrict a user from sending messages |
-| `/unmute [@user\|id]` | Lift a mute |
-| `/kick [@user\|id]` | Remove a user (they can rejoin) |
-| `/ban [@user\|id] [reason]` | Permanently ban a user |
-| `/unban [@user\|id]` | Lift a ban |
-| `/warn [@user\|id] [reason]` | Warn a user; auto-bans at warn limit |
-| `/warns [@user\|id]` | Show warnings for a user |
-| `/clearwarns [@user\|id]` | Clear all warnings for a user |
-| `/warnlimit <n>` | Set auto-ban threshold (default: 3) |
-| `/pin [loud]` | Pin the replied-to message |
-| `/unpin` | Unpin a message |
-| `/gblacklist [@user\|id]` | Add to global bot blacklist (owner only) |
-| `/gunblacklist [@user\|id]` | Remove from global blacklist (owner only) |
+---
 
-All moderation commands work by **replying to a message** or passing an integer user ID or `@username`.
+## Environment Variables
 
-### Welcome & Verification
-| Command | Description |
-|---|---|
-| `/setwelcome <text>` | Set welcome message (supports `{name}`, `{username}`, `{chat}`, `{id}`) |
-| `/delwelcome` | Disable welcome message |
-| `/setgoodbye <text>` | Set goodbye message |
-| `/delgoodbye` | Disable goodbye message |
-| `/verification on\|off` | Toggle join verification (CAPTCHA button) |
-| `/verificationtimeout <secs>` | Kick unverified users after N seconds |
+Copy `.env.example` → `.env`:
 
-### Anti-Spam & Anti-Ad
-| Command | Description |
-|---|---|
-| `/antispam on\|off` | Toggle rate-limit muting |
-| `/antispam threshold <n> <secs>` | N messages per window before auto-mute |
-| `/antiad on\|off` | Block Telegram group invite links |
-
-### RSS Subscriptions
-| Command | Description |
-|---|---|
-| `/rss add <url> [label]` | Subscribe current chat to a feed |
-| `/rss del <id>` | Unsubscribe a feed |
-| `/rss list` | List active subscriptions |
-| `/rss pause <id>` | Pause polling |
-| `/rss resume <id>` | Resume polling |
-| `/rss interval <minutes>` | Set poll interval (min 5, default 15) |
-
-### Media Queries (requires API keys)
-| Command | Description | Key |
+| Variable | Required | Description |
 |---|---|---|
-| `/movie <title>` | Search movies on TMDB | `TMDB_API_KEY` |
-| `/tv <title>` | Search TV shows on TMDB | `TMDB_API_KEY` |
-| `/book <query>` | Search books via Google Books | — |
-| `/music <artist - track>` | Search a track on Last.fm | `LASTFM_API_KEY` |
-| `/artist <name>` | Artist info + top tracks | `LASTFM_API_KEY` |
+| `BOT_TOKEN` | ✅ | Telegram bot token from [@BotFather](https://t.me/BotFather) |
+| `OWNER_ID` | ✅ | Your Telegram user ID (send `/start` to [@userinfobot](https://t.me/userinfobot)) |
+| `DATABASE_URL` | — | SQLAlchemy URL (default: `sqlite+aiosqlite:///data/ponygram.db`) |
+| `LOG_LEVEL` | — | `DEBUG` / `INFO` / `WARNING` / `ERROR` (default `INFO`) |
+| `WEBHOOK_URL` | — | Set to enable webhook mode (e.g. `https://yourdomain.com/webhook`) |
+| `WEBHOOK_PORT` | — | Webhook port (default `8443`) |
+| `RSS_INTERVAL` | — | Feed poll interval in minutes (min 5, default 15) |
+| `WEB_ENABLED` | — | `true` to start the Web Admin UI (default `false`) |
+| `WEB_SECRET` | ✅ if web | Strong password for the Web Admin login page |
+| `WEB_HOST` | — | Bind host (default `0.0.0.0`) |
+| `WEB_PORT` | — | Web Admin port (default `8080`) |
 
-### Media Download (yt-dlp)
+> **API Keys** (Claude, TMDB, Last.fm, RAWG, PSN) are **not** set in `.env`.
+> Configure them in **Web Admin → Settings** after the bot starts — no restart needed.
+
+---
+
+## API Keys — Where to Get Them
+
+### 🤖 Claude API Key
+
+**Used for:** AI dialogue — triggered by @mention / "pony " prefix / reply to bot
+
+**How to get:**
+1. Go to **[console.anthropic.com](https://console.anthropic.com)**
+2. Sign up / log in → **API Keys** in the left sidebar → **Create Key**
+3. Give it a name (e.g. "ponygram") → **Create Key**
+4. Copy the key immediately — it is **only shown once**
+
+**Format:** `sk-ant-api03-` followed by ~95 alphanumeric characters
+```
+sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX-XXXXXXXXXXXXXXXX
+```
+
+---
+
+### 🎬 TMDB API Key
+
+**Used for:** `@bot movie <title>` and `@bot tv <title>` inline search
+
+**How to get:**
+1. Go to **[themoviedb.org](https://www.themoviedb.org)** → sign up for free
+2. Click your avatar → **Settings** → **API** (left sidebar)
+3. Under "Request an API Key" → **Developer** → accept terms
+4. Fill in: App name = "Ponygram Bot", App URL = your server IP, Summary = "personal Telegram bot"
+5. Copy **API Key (v3 auth)** — the shorter 32-character key, NOT the "API Read Access Token"
+
+**Format:** 32 lowercase hex characters (no dashes, no prefix)
+```
+a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+```
+
+---
+
+### 🎵 Last.fm API Key
+
+**Used for:** `@bot music <artist - track>` and `@bot artist <name>` inline search
+
+**How to get:**
+1. Sign in at **[last.fm](https://www.last.fm)**
+2. Go to **[last.fm/api/account/create](https://www.last.fm/api/account/create)**
+3. Fill in: Application name = "Ponygram Bot", Description = "personal Telegram bot"
+4. Submit → copy the **API key** (not the Shared Secret)
+
+**Format:** 32 lowercase hex characters
+```
+a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
+```
+
+---
+
+### 🎮 RAWG.io API Key
+
+**Used for:** `@bot game <title>` — PS4/PS5 game search with cover art, ratings, Metacritic scores
+
+**How to get:**
+1. Go to **[rawg.io/apidocs](https://rawg.io/apidocs)**
+2. Click **Get API Key** → sign up for free (no credit card)
+3. Your API key is shown on the page immediately after registration
+
+**Free tier:** 200,000 requests/month — sufficient for personal use.
+
+**Format:** 40 lowercase hex characters
+```
+a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
+```
+
+---
+
+### 🕹️ PSN NPSSO Token
+
+**Used for:** `/psn <id>` (user profile, trophy level, platinum count) and `/trophy <id> <game>`
+
+The NPSSO is a long-lived session cookie from your PlayStation Network account. The bot automatically exchanges it for short-lived API tokens (valid 1h, refreshed silently).
+
+**Step-by-step:**
+
+**Step 1** — Log in to PSN in your browser:
+```
+https://store.playstation.com
+```
+
+**Step 2** — In the same browser, open a new tab and navigate to:
+```
+https://ca.account.sony.com/api/v1/ssocookie
+```
+
+**Step 3** — You will see a raw JSON response:
+```json
+{"npsso":"Abcdefghijklmnopqrstuvwxyz123456ABCDEFGHIJKLMNOPQRSTUVWXYZ789012"}
+```
+
+**Step 4** — Copy only the value (64 characters between the quotes, without the quotes).
+
+**Step 5** — Paste into **Web Admin → Settings → PSN NPSSO Token** → Save.
+
+**Format:** 64 alphanumeric characters, mixed case
+```
+Abcdefghijklmnopqrstuvwxyz123456ABCDEFGHIJKLMNOPQRSTUVWXYZ789012
+```
+
+**⚠️ Notes:**
+- Expires after ~2 months or when you sign out of PSN on any device
+- If `/psn` stops working, repeat the steps to get a fresh token and paste it again
+- The bot only **reads** data — it never modifies your PSN account
+- Use your own PSN account's NPSSO (it's tied to your login session)
+
+---
+
+### 🍪 Platform Cookies (media parsing)
+
+**Used for:** downloading restricted content from Instagram, Twitter/X, Bilibili, 抖音, etc.
+
+Without cookies, many platforms block anonymous requests. Cookies let the bot act as a logged-in user when parsing media URLs.
+
+**How to export cookies (works for all platforms):**
+
+1. Install **[Cookie-Editor](https://cookie-editor.com/)** browser extension (Chrome or Firefox)
+2. Log in to the platform in your browser (e.g. instagram.com)
+3. Click the Cookie-Editor icon in your toolbar
+4. Click **Export** → **Header String**
+5. Copy the result (it looks like: `sessionid=abc123; csrftoken=xyz456; ds_user_id=789...`)
+6. Paste into **Web Admin → Settings** → the corresponding platform field
+
+**Supported:** Instagram · Twitter/X · Bilibili · 抖音 · TikTok · 快手 · 小红书 · YouTube
+
+---
+
+## Commands Reference
+
+### 👤 General
+
 | Command | Description |
 |---|---|
-| `/dl <url>` | Download video/audio and send to chat |
-| `/dlinfo <url>` | Show media info without downloading |
-| `/dlmode on\|off` | Toggle auto-detection of media URLs (admin) |
+| `/start` | Welcome message |
+| `/help` | List commands |
+| `/id` | Your Telegram ID |
+| `/id @user` | Another user's info |
+| `/whois` | Detailed user info from DB |
+| `/rules` | Show group rules (configured via Web Admin) |
 
-Supports YouTube, Bilibili, TikTok / Douyin, Instagram, Twitter/X, and 1 000+ other sites.
-Files over 50 MB fall back to a thumbnail + info card.
+### 🔨 Moderation (group admins only)
 
-### AI Dialogue (Claude — requires `CLAUDE_API_KEY`)
 | Command | Description |
 |---|---|
-| `/chat <message>` | Chat with Claude AI (multi-turn, per-user history) |
-| `/ask <message>` | Alias for `/chat` |
-| `/clearchat` | Reset your conversation history |
-| `/aichat on\|off` | Auto-reply when the bot is @mentioned (admin) |
+| `/mute [@user\|id] [1h\|30m\|2d]` | Mute a user |
+| `/unmute [@user\|id]` | Unmute |
+| `/kick [@user\|id]` | Remove from group (can rejoin) |
+| `/ban [@user\|id] [reason]` | Permanently ban |
+| `/unban [@user\|id]` | Unban |
+| `/warn [@user\|id] [reason]` | Warn (auto-bans at warn limit) |
+| `/warns [@user\|id]` | Show warning history |
+| `/clearwarns [@user\|id]` | Clear all warnings |
+| `/pin [loud]` | Pin replied-to message |
+| `/unpin` | Unpin |
 
-Uses `claude-opus-4-7` with adaptive thinking and live streaming (the reply updates progressively as Claude generates text).
+All moderation commands work by **replying to a message** or passing `@username` / user ID.
 
-### Utility
-| Command | Description |
+### 🤖 AI Dialogue
+
+No slash commands. The bot responds when you:
+- **@mention** it in a group
+- Start a message with **`pony `** (case-insensitive)
+- **Reply** to a message the bot sent
+
+Requires `claude_api_key` in Web Admin → Settings.
+
+### 🎮 PlayStation
+
+| Command | Requires | Description |
+|---|---|---|
+| `/psn <psn_id>` | PSN NPSSO | User profile (trophy level, platinums, recent games) |
+| `/trophy <psn_id> <game>` | PSN NPSSO | Trophy progress for a game |
+| `/psprice <title>` | — | PS Store price + history low (US + CN via PSPrices.com) |
+
+### 🔍 Inline Search (`@bot <prefix> <query>`)
+
+Type in any chat:
+
+| Prefix | Requires | Description |
+|---|---|---|
+| `movie <title>` | TMDB Key | Movie search |
+| `tv <title>` | TMDB Key | TV show search |
+| `book <query>` | — | Google Books |
+| `music <artist - track>` | Last.fm Key | Track search |
+| `artist <name>` | Last.fm Key | Artist info + top tracks |
+| `game <title>` | RAWG Key | PS4/PS5 game search |
+| `psn <psn_id>` | PSN NPSSO | PSN user profile card |
+
+---
+
+## Web Admin UI
+
+Enable in `.env`:
+```env
+WEB_ENABLED=true
+WEB_SECRET=your-strong-random-password
+WEB_PORT=8080
+```
+
+### Pages
+
+| Page | Description |
 |---|---|
-| `/id` | Show your Telegram ID and info |
-| `/id [@user\|reply]` | Show another user's info |
-| `/whois` | Detailed user info from the database |
-| `/start` | Intro message |
-| `/help` | List all available commands |
+| `/` | Dashboard — stats + **live service health checks** |
+| `/groups` | All groups; activate new groups by ID or `t.me/` share link |
+| `/groups/<id>` | Group settings (toggles, thresholds, welcome/goodbye/rules text) |
+| `/blacklist` | Global ban list |
+| `/rss` | RSS subscriptions across all chats |
+| `/settings` | API keys + PSN token + platform cookies (with inline help for each) |
+
+### Service Health Panel (Dashboard)
+
+The dashboard shows a real-time status panel for every configured service:
+
+- **🟢 Configured** — key exists in the database
+- **🔴 Not configured** — feature is unavailable until set up
+- **✅ OK** — key verified by a live test API call
+- **❌ Failed** — key is set but invalid or the service is unreachable
+
+Press **Test** next to any service to make a live API call and verify the key actually works.
+
+### Per-Group Settings
+
+**Toggles:** Welcome · Goodbye · Join verification · Anti-spam · Anti-ad · Media URL auto-detect · AI auto-reply
+
+**Thresholds:** Verification timeout · Anti-spam rate (msgs/window) · Warn auto-ban limit
+
+**Text fields:** Welcome message · Goodbye message · Group rules
+
+> **Security:** `WEB_SECRET` is HMAC-SHA256 signed into a session cookie.
+> Never expose port 8080 publicly without a reverse proxy + TLS.
 
 ---
 
@@ -108,83 +291,39 @@ Uses `claude-opus-4-7` with adaptive thinking and live streaming (the reply upda
 
 ```
 ponygram/
-├── bot/                    # Core framework
-│   ├── config.py           # Environment-based configuration
-│   ├── database.py         # SQLAlchemy async DB layer (SQLite)
+├── bot/
+│   ├── config.py           # .env parsing
+│   ├── database.py         # SQLAlchemy async (SQLite + auto-migration)
 │   ├── logger.py           # structlog structured logging
-│   ├── error_handler.py    # Global Telegram error handler
-│   ├── permissions.py      # admin_only / owner_only / group_only decorators
-│   ├── router.py           # Command registry & handler setup
-│   ├── cache.py            # TTL in-memory cache for API results
-│   └── plugin_loader.py    # Auto-loads modules/ and plugins/
-├── modules/                # Built-in feature modules
+│   ├── permissions.py      # admin_only / group_only decorators
+│   ├── router.py           # Command registry
+│   ├── cache.py            # TTL in-memory cache
+│   └── plugin_loader.py    # Auto-loads modules/ + plugins/
+├── modules/
 │   ├── start.py            # /start, /help
-│   ├── admin.py            # Moderation + warn system + pin/unpin
+│   ├── admin.py            # Moderation commands + /rules
 │   ├── welcome.py          # Welcome/goodbye + join verification
 │   ├── antispam.py         # Rate-limit + anti-invite-link filter
 │   ├── userinfo.py         # /id, /whois
-│   ├── rss.py              # RSS subscriptions
-│   ├── movie.py            # TMDB movie/TV search
-│   ├── book.py             # Google Books search
-│   ├── music.py            # Last.fm track/artist search
-│   ├── media.py            # yt-dlp download
-│   └── ai_chat.py          # Claude AI dialogue
-├── plugins/                # Drop third-party .py plugins here
+│   ├── rss.py              # RSS subscriptions (background scheduler)
+│   ├── movie.py            # TMDB movie/TV
+│   ├── book.py             # Google Books
+│   ├── music.py            # Last.fm
+│   ├── media.py            # yt-dlp / ParseHub media download
+│   ├── ai_chat.py          # Claude AI dialogue
+│   ├── inline.py           # @bot inline queries
+│   ├── psn.py              # PS game search, PSN profile, trophies
+│   └── cookie_manager.py   # Platform cookie auto-refresh
+├── web/
+│   ├── app.py              # FastAPI web admin (all routes)
+│   └── templates/          # Jinja2 + Bootstrap 5 dark theme
+├── plugins/                # Drop custom .py plugins here (auto-loaded)
 ├── data/                   # SQLite database (git-ignored)
 ├── logs/                   # Log files (git-ignored)
 ├── main.py                 # Entry point
-├── .env.example            # Environment variable template
+├── .env.example
 └── requirements.txt
 ```
-
-## Environment Variables
-
-Copy `.env.example` to `.env` and fill in the values:
-
-| Variable | Required | Description |
-|---|---|---|
-| `BOT_TOKEN` | ✅ | Token from @BotFather |
-| `OWNER_ID` | ✅ | Your Telegram user ID |
-| `ADMIN_IDS` | — | Comma-separated additional admin IDs |
-| `DATABASE_URL` | — | SQLAlchemy URL (default: SQLite) |
-| `LOG_LEVEL` | — | `DEBUG` / `INFO` / `WARNING` / `ERROR` |
-| `WEBHOOK_URL` | — | Set to enable webhook mode |
-| `WEBHOOK_PORT` | — | Webhook port (default 8443) |
-| `RSS_INTERVAL` | — | Feed poll interval in minutes (default 15) |
-| `TMDB_API_KEY` | — | For `/movie` and `/tv` |
-| `LASTFM_API_KEY` | — | For `/music` and `/artist` |
-| `CLAUDE_API_KEY` | — | For `/chat` and AI auto-reply |
-| `DL_MAX_MB` | — | Max upload size in MB (default 49) |
-
-## Web Admin UI
-
-A built-in configuration dashboard lets you manage group settings and the blacklist from a browser — no SSH required.
-
-**Enable it** by adding to `.env`:
-```env
-WEB_ENABLED=true
-WEB_SECRET=your-strong-password-here
-WEB_PORT=8080   # optional, default 8080
-```
-
-Then open `http://<server-ip>:8080` and log in with `WEB_SECRET`.
-
-### Pages
-
-| Page | Description |
-|---|---|
-| `/` | Dashboard — user, group, blacklist, and warn counts |
-| `/groups` | All groups with at-a-glance feature badges |
-| `/groups/<id>` | Edit all settings for one group (toggles + numeric thresholds) |
-| `/blacklist` | View, add, and remove global blacklist entries |
-
-### What you can configure per group
-
-**Module toggles (on/off):** Welcome messages · Goodbye messages · Join verification · Anti-spam · Anti-advertising · Media URL auto-detect · AI @mention reply
-
-**Numeric thresholds:** Verification timeout · Anti-spam rate limit (messages / window) · Warn auto-ban limit
-
-> **Security:** `WEB_SECRET` is hashed with HMAC-SHA256 into a signed session cookie. Never expose port 8080 publicly without a reverse proxy + TLS.
 
 ---
 
@@ -194,74 +333,59 @@ Then open `http://<server-ip>:8080` and log in with `WEB_SECRET`.
 
 ```bash
 cp .env.example .env
-# fill in BOT_TOKEN and other keys
+# Edit: BOT_TOKEN, OWNER_ID, WEB_ENABLED=true, WEB_SECRET=your-password
 
 docker compose up -d
+docker compose logs -f
 ```
 
-Logs stream to `./logs/` and the database persists in `./data/`.
-
-For **webhook mode**, uncomment the `ports` section in `docker-compose.yml` and set `WEBHOOK_URL` in `.env`.
-
-### systemd (bare-metal)
+### systemd
 
 ```bash
-# 1. Create a dedicated user
 sudo useradd -r -s /bin/false ponygram
-
-# 2. Install the bot
-sudo mkdir -p /opt/ponygram
-sudo cp -r . /opt/ponygram
+sudo mkdir -p /opt/ponygram && sudo cp -r . /opt/ponygram
 sudo chown -R ponygram:ponygram /opt/ponygram
-
-# 3. Create a virtualenv and install deps
 sudo -u ponygram python3 -m venv /opt/ponygram/.venv
 sudo -u ponygram /opt/ponygram/.venv/bin/pip install -r /opt/ponygram/requirements.txt
-
-# 4. Configure environment
 sudo cp /opt/ponygram/.env.example /opt/ponygram/.env
 sudo nano /opt/ponygram/.env   # set BOT_TOKEN etc.
-
-# 5. Install and start the service
 sudo cp deploy/ponygram.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now ponygram
-
-# Check status
-sudo systemctl status ponygram
+sudo systemctl daemon-reload && sudo systemctl enable --now ponygram
 sudo journalctl -u ponygram -f
+```
+
+### Reverse Proxy (nginx + TLS)
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name admin.yourdomain.com;
+    ssl_certificate     /etc/letsencrypt/live/admin.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/admin.yourdomain.com/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
 ```
 
 ---
 
 ## Adding a Custom Plugin
 
-Create `plugins/my_feature.py` with a `setup(application)` function:
+Create `plugins/my_feature.py`:
 
 ```python
 from telegram.ext import Application, CommandHandler
 from bot.router import registry
 
 async def my_command(update, context):
-    await update.effective_message.reply_text("Hello!")
+    await update.effective_message.reply_text("Hello from my plugin!")
 
 def setup(application: Application) -> None:
     registry.register_command("mycommand", my_command, "Does something cool")
     application.add_handler(CommandHandler("mycommand", my_command))
 ```
 
-The plugin is picked up automatically on the next start — no changes to `main.py` needed.
-
-## Roadmap
-
-| Phase | Feature | Status |
-|---|---|---|
-| 1 | Base framework (config, logging, routing, plugin loader) | ✅ Done |
-| 2 | Group management (welcome, verification, anti-spam) | ✅ Done |
-| 3 | RSS subscriptions | ✅ Done |
-| 4 | Media queries (TMDB, Google Books, Last.fm) | ✅ Done |
-| 5 | Media download via yt-dlp | ✅ Done |
-| 6 | AI dialogue via Claude | ✅ Done |
-| Polish | Warn system, pin/unpin, live streaming, bug fixes | ✅ Done |
-| 7 | Deployment (Docker, systemd) | ✅ Done |
-| 8 | Web admin UI (FastAPI + Bootstrap) | ✅ Done |
+Picked up automatically on next start — no changes to `main.py` needed.

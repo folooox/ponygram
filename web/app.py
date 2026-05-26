@@ -2,23 +2,27 @@
 Ponygram web admin UI.
 
 Start via main.py when WEB_ENABLED=true.  Provides:
-  /           — dashboard
+  /           — dashboard (stats + service health panel)
   /groups     — list all groups; search/activate new groups
   /groups/<id>— group settings form
   /blacklist  — view, add, remove global blacklist entries
   /rss        — manage RSS subscriptions across all chats
   /settings   — bot-level API key configuration
+  /health     — JSON service health (used by dashboard JS)
+  /health/check/{service} — live-test a specific service
   /login      — password form (WEB_SECRET from .env)
   /logout     — clear session
 """
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 from pathlib import Path
 from typing import Any, Optional
 
+import aiohttp
 from fastapi import Cookie, FastAPI, Form, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -158,6 +162,232 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         })
 
     # ------------------------------------------------------------------ #
+    # Health checks                                                        #
+    # ------------------------------------------------------------------ #
+
+    async def _passive_health() -> dict:
+        """Return configured/missing status for all services (no live calls)."""
+        configs = await get_all_bot_configs()
+        yt_dlp_ok = False
+        try:
+            import yt_dlp  # noqa: F401
+            yt_dlp_ok = True
+        except ImportError:
+            pass
+
+        services = {
+            "telegram": {
+                "label": "Telegram Bot",
+                "icon": "bi-telegram",
+                "status": "ok" if _bot else "missing",
+                "detail": f"@{_bot.username}" if _bot and hasattr(_bot, "username") and _bot.username else ("Connected" if _bot else "Bot not injected"),
+                "testable": True,
+                "setup_url": "https://t.me/BotFather",
+                "setup_hint": "Get a token from @BotFather",
+            },
+            "claude": {
+                "label": "Claude AI",
+                "icon": "bi-robot",
+                "status": "ok" if configs.get("claude_api_key") else "missing",
+                "detail": "Key configured" if configs.get("claude_api_key") else "Not configured",
+                "testable": bool(configs.get("claude_api_key")),
+                "setup_url": "https://console.anthropic.com",
+                "setup_hint": "Sign up at console.anthropic.com → API Keys → Create Key",
+                "format_hint": "sk-ant-api03-…",
+            },
+            "tmdb": {
+                "label": "TMDB (movie/TV)",
+                "icon": "bi-film",
+                "status": "ok" if configs.get("tmdb_api_key") else "missing",
+                "detail": "Key configured" if configs.get("tmdb_api_key") else "Not configured",
+                "testable": bool(configs.get("tmdb_api_key")),
+                "setup_url": "https://www.themoviedb.org/settings/api",
+                "setup_hint": "themoviedb.org → Settings → API → Request Developer key",
+                "format_hint": "32 hex chars, e.g. a1b2c3d4e5f6…",
+            },
+            "lastfm": {
+                "label": "Last.fm (music)",
+                "icon": "bi-music-note-beamed",
+                "status": "ok" if configs.get("lastfm_api_key") else "missing",
+                "detail": "Key configured" if configs.get("lastfm_api_key") else "Not configured",
+                "testable": bool(configs.get("lastfm_api_key")),
+                "setup_url": "https://www.last.fm/api/account/create",
+                "setup_hint": "last.fm/api/account/create → copy API key",
+                "format_hint": "32 hex chars",
+            },
+            "rawg": {
+                "label": "RAWG.io (games)",
+                "icon": "bi-controller",
+                "status": "ok" if configs.get("rawg_api_key") else "missing",
+                "detail": "Key configured" if configs.get("rawg_api_key") else "Not configured",
+                "testable": bool(configs.get("rawg_api_key")),
+                "setup_url": "https://rawg.io/apidocs",
+                "setup_hint": "rawg.io/apidocs → Get API Key (free, no card)",
+                "format_hint": "40 hex chars",
+            },
+            "psn": {
+                "label": "PSN (trophies)",
+                "icon": "bi-person-badge",
+                "status": "ok" if configs.get("psn_npsso") else "missing",
+                "detail": "NPSSO token configured" if configs.get("psn_npsso") else "Not configured",
+                "testable": bool(configs.get("psn_npsso")),
+                "setup_url": "https://ca.account.sony.com/api/v1/ssocookie",
+                "setup_hint": "Log in to store.playstation.com, then open ca.account.sony.com/api/v1/ssocookie and copy the npsso value",
+                "format_hint": "64 alphanumeric chars",
+            },
+            "ytdlp": {
+                "label": "yt-dlp (media)",
+                "icon": "bi-download",
+                "status": "ok" if yt_dlp_ok else "missing",
+                "detail": "Available" if yt_dlp_ok else "Not installed — run: pip install yt-dlp",
+                "testable": yt_dlp_ok,
+                "setup_url": "https://github.com/yt-dlp/yt-dlp",
+                "setup_hint": "pip install yt-dlp",
+                "format_hint": None,
+            },
+        }
+        return services
+
+    @app.get("/health")
+    async def health_status(session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        services = await _passive_health()
+        return JSONResponse({k: {
+            "label": v["label"],
+            "status": v["status"],
+            "detail": v["detail"],
+            "testable": v["testable"],
+        } for k, v in services.items()})
+
+    @app.post("/health/check/{service}")
+    async def health_check_service(service: str, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        configs = await get_all_bot_configs()
+
+        async def _http_get(url: str, **kwargs) -> tuple[int, dict]:
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.get(url, timeout=aiohttp.ClientTimeout(total=8), **kwargs) as r:
+                        try:
+                            body = await r.json()
+                        except Exception:
+                            body = {}
+                        return r.status, body
+            except Exception as e:
+                return 0, {"error": str(e)}
+
+        if service == "telegram":
+            if not _bot:
+                return JSONResponse({"status": "error", "detail": "Bot not available"})
+            try:
+                me = await asyncio.wait_for(_bot.get_me(), timeout=5)
+                return JSONResponse({"status": "ok", "detail": f"@{me.username} — {me.first_name}"})
+            except Exception as e:
+                return JSONResponse({"status": "error", "detail": str(e)})
+
+        elif service == "claude":
+            key = configs.get("claude_api_key")
+            if not key:
+                return JSONResponse({"status": "missing", "detail": "API key not configured"})
+            try:
+                import anthropic
+                client = anthropic.AsyncAnthropic(api_key=key)
+                msg = await asyncio.wait_for(
+                    client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=1,
+                        messages=[{"role": "user", "content": "hi"}],
+                    ),
+                    timeout=10,
+                )
+                return JSONResponse({"status": "ok", "detail": f"Model {msg.model} — key valid"})
+            except Exception as e:
+                err = str(e)
+                detail = "Invalid API key" if "authentication" in err.lower() or "401" in err else err[:120]
+                return JSONResponse({"status": "error", "detail": detail})
+
+        elif service == "tmdb":
+            key = configs.get("tmdb_api_key")
+            if not key:
+                return JSONResponse({"status": "missing", "detail": "API key not configured"})
+            status, body = await _http_get(f"https://api.themoviedb.org/3/configuration?api_key={key}")
+            if status == 200:
+                return JSONResponse({"status": "ok", "detail": "TMDB API key is valid"})
+            elif status == 401:
+                return JSONResponse({"status": "error", "detail": "Invalid API key"})
+            else:
+                return JSONResponse({"status": "error", "detail": f"HTTP {status}"})
+
+        elif service == "lastfm":
+            key = configs.get("lastfm_api_key")
+            if not key:
+                return JSONResponse({"status": "missing", "detail": "API key not configured"})
+            status, body = await _http_get(
+                "https://ws.audioscrobbler.com/2.0/",
+                params={"method": "chart.gettopartists", "api_key": key, "format": "json", "limit": "1"},
+            )
+            if status == 200 and "artists" in body:
+                return JSONResponse({"status": "ok", "detail": "Last.fm API key is valid"})
+            elif body.get("error") == 10:
+                return JSONResponse({"status": "error", "detail": "Invalid API key"})
+            else:
+                return JSONResponse({"status": "error", "detail": body.get("message", f"HTTP {status}")[:120]})
+
+        elif service == "rawg":
+            key = configs.get("rawg_api_key")
+            if not key:
+                return JSONResponse({"status": "missing", "detail": "API key not configured"})
+            status, body = await _http_get(
+                "https://api.rawg.io/api/games",
+                params={"key": key, "page_size": "1"},
+            )
+            if status == 200 and "results" in body:
+                return JSONResponse({"status": "ok", "detail": f"RAWG API key is valid ({body.get('count', '?')} games indexed)"})
+            elif status == 401 or status == 403:
+                return JSONResponse({"status": "error", "detail": "Invalid API key"})
+            else:
+                return JSONResponse({"status": "error", "detail": f"HTTP {status}"})
+
+        elif service == "psn":
+            npsso = configs.get("psn_npsso")
+            if not npsso:
+                return JSONResponse({"status": "missing", "detail": "NPSSO token not configured"})
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://ca.account.sony.com/api/authz/v3/oauth/token",
+                        data={"grant_type": "sso_cookie", "npsso": npsso},
+                        headers={
+                            "Content-Type": "application/x-www-form-urlencoded",
+                            "Cookie": f"npsso={npsso}",
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r:
+                        body = await r.json()
+                        if r.status == 200 and body.get("access_token"):
+                            return JSONResponse({"status": "ok", "detail": "NPSSO token is valid — access token obtained"})
+                        elif r.status in (400, 401):
+                            return JSONResponse({"status": "error", "detail": "NPSSO token is expired or invalid — please refresh it"})
+                        else:
+                            return JSONResponse({"status": "error", "detail": f"HTTP {r.status}: {str(body)[:100]}"})
+            except Exception as e:
+                return JSONResponse({"status": "error", "detail": str(e)[:120]})
+
+        elif service == "ytdlp":
+            try:
+                import yt_dlp
+                ver = yt_dlp.version.__version__
+                return JSONResponse({"status": "ok", "detail": f"yt-dlp {ver} installed"})
+            except ImportError:
+                return JSONResponse({"status": "error", "detail": "yt-dlp not installed — run: pip install yt-dlp"})
+
+        else:
+            return JSONResponse({"status": "error", "detail": f"Unknown service: {service}"}, status_code=400)
+
+    # ------------------------------------------------------------------ #
     # Groups                                                               #
     # ------------------------------------------------------------------ #
 
@@ -260,7 +490,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             "antispam_window": (1, 300),
             "warn_limit": (1, 20),
         }
-        text_fields = ["welcome_text", "goodbye_text"]
+        text_fields = ["welcome_text", "goodbye_text", "rules_text"]
 
         kwargs: dict = {}
         for field in bool_fields:
@@ -417,7 +647,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         form = await request.form()
-        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key"]
+        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key", "psn_npsso"]
         cookie_keys = [
             "cookie_instagram", "cookie_twitter", "cookie_bilibili",
             "cookie_douyin", "cookie_tiktok", "cookie_kuaishou",
