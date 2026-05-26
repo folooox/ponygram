@@ -520,6 +520,65 @@ async def cmd_trophy(update: Update, context) -> None:
                                 parse_mode=ParseMode.HTML)
 
 
+async def cmd_game(update: Update, context) -> None:
+    """/game <title> — 用 RAWG.io 搜索 PS4/PS5 游戏信息，附带 PS Store 价格"""
+    msg = update.effective_message
+    chat = update.effective_chat
+    if not msg or not chat:
+        return
+    if not await _check_active(chat.id, chat.type):
+        return
+
+    query = " ".join(context.args or "").strip()
+    if not query:
+        await msg.reply_text(
+            "用法：<code>/game &lt;游戏名&gt;</code>\n"
+            "例如：<code>/game Elden Ring</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    rawg_key = await get_bot_config("rawg_api_key")
+    if not rawg_key:
+        await msg.reply_text(
+            "❌ RAWG API Key 未配置，请在 Web Admin → Settings 中填写。\n"
+            "获取地址：rawg.io/apidocs",
+        )
+        return
+
+    status = await msg.reply_text(f"⏳ 正在搜索 {html.escape(query)}…")
+    try:
+        items_res, price_res = await asyncio.gather(
+            asyncio.wait_for(search_games(query), timeout=10),
+            asyncio.wait_for(search_psprices(query), timeout=10),
+            return_exceptions=True,
+        )
+
+        items = items_res if isinstance(items_res, list) else None
+        if not items:
+            await status.edit_text(
+                f"❌ 未找到游戏：<b>{html.escape(query)}</b>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        game_text = _format_game(items[0])
+
+        if isinstance(price_res, list) and price_res:
+            game_text += "\n\n" + _format_price(price_res, query)
+
+        await status.edit_text(game_text, parse_mode=ParseMode.HTML)
+
+    except asyncio.TimeoutError:
+        await status.edit_text("❌ 查询超时，请稍后再试。")
+    except Exception as e:
+        log.warning("Game query failed", error=str(e))
+        await status.edit_text(
+            f"❌ 查询失败：<code>{html.escape(str(e)[:200])}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Module setup
 # ---------------------------------------------------------------------------
@@ -529,6 +588,7 @@ def setup(application: Application) -> None:
         ("psn",      cmd_psn,      "查询 PSN 用户档案 [psn_id]",   False),
         ("psprice",  cmd_psprice,  "查询游戏 PS Store 价格",        False),
         ("trophy",   cmd_trophy,   "查询奖杯进度 <psn_id> <游戏>", False),
+        ("game",     cmd_game,     "搜索 PS4/PS5 游戏信息",         False),
     ]
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)

@@ -23,7 +23,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-from telegram import Update
+from telegram import InputMediaPhoto, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
@@ -86,7 +86,6 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 }
 
 _ph = None
-_ytparser_patched = False
 
 
 def _is_known_url(url: str) -> bool:
@@ -133,11 +132,11 @@ def _patch_ytparser_proxy() -> None:
         log.warning("Failed to patch YtParser proxy", error=str(e))
 
 
+
 def _get_ph():
     global _ph
     if _ph is None:
         from parsehub import ParseHub
-        _patch_ytparser_proxy()
         _ph = ParseHub()
     return _ph
 
@@ -312,10 +311,13 @@ async def _process_url(update: Update, context, url: str) -> None:
             log.warning("ParseHub download failed", url=url, error=str(e))
 
         # Build caption
-        title = (getattr(result, "title", "") or "").strip()
+        title   = (getattr(result, "title",   "") or "").strip()
+        content = (getattr(result, "content", "") or "").strip()
         lines: list[str] = []
         if title:
             lines.append(f"🎬 <b>{title[:200]}</b>")
+        if content:
+            lines.append(f"\n{content[:600]}")
         lines.append(f'\n🔗 <a href="{url}">{platform_name}</a>')
         caption = "\n".join(lines)
 
@@ -362,16 +364,57 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         await context.bot.send_chat_action(chat.id, chat_action)
 
-        for i, fp in enumerate(sendable[:10]):
+        _img_exts   = {".jpg", ".jpeg", ".png", ".webp"}
+        _video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+        _audio_exts = {".mp3", ".m4a", ".ogg", ".opus", ".flac"}
+
+        photos = [f for f in sendable if f.suffix.lower() in _img_exts]
+        others = [f for f in sendable if f.suffix.lower() not in _img_exts]
+
+        files_sent = 0
+
+        if len(photos) >= 2:
+            # 多图图集 → send_media_group（最多10张）
+            fhs = [open(fp, "rb") for fp in photos[:10]]
+            try:
+                media_group = [
+                    InputMediaPhoto(
+                        media=fh,
+                        caption=caption[:1024] if i == 0 else "",
+                        parse_mode=ParseMode.HTML,
+                    )
+                    for i, fh in enumerate(fhs)
+                ]
+                await context.bot.send_media_group(
+                    chat.id,
+                    media=media_group,
+                    reply_to_message_id=msg.message_id,
+                )
+                files_sent += len(fhs)
+            finally:
+                for fh in fhs:
+                    fh.close()
+        elif len(photos) == 1:
+            with open(photos[0], "rb") as f:
+                await context.bot.send_photo(
+                    chat.id, photo=f, caption=caption[:1024],
+                    parse_mode=ParseMode.HTML, reply_to_message_id=msg.message_id,
+                )
+            files_sent += 1
+
+        # 非图片文件（视频、音频、GIF、文档）逐个发送
+        first_other = files_sent == 0
+        for fp in others[:10 - files_sent]:
             ext = fp.suffix.lower()
-            c = caption[:1024] if i == 0 else ""
+            c = caption[:1024] if first_other else ""
+            first_other = False
             with open(fp, "rb") as f:
-                if ext in (".mp4", ".mkv", ".webm", ".mov", ".avi"):
+                if ext in _video_exts:
                     await context.bot.send_video(
                         chat.id, video=f, caption=c, parse_mode=ParseMode.HTML,
                         supports_streaming=True, reply_to_message_id=msg.message_id,
                     )
-                elif ext in (".mp3", ".m4a", ".ogg", ".opus", ".flac"):
+                elif ext in _audio_exts:
                     await context.bot.send_audio(
                         chat.id, audio=f, caption=c, parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
@@ -381,18 +424,14 @@ async def _process_url(update: Update, context, url: str) -> None:
                         chat.id, animation=f, caption=c, parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
-                elif ext in (".jpg", ".jpeg", ".png", ".webp"):
-                    await context.bot.send_photo(
-                        chat.id, photo=f, caption=c, parse_mode=ParseMode.HTML,
-                        reply_to_message_id=msg.message_id,
-                    )
                 else:
                     await context.bot.send_document(
                         chat.id, document=f, caption=c, parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
+            files_sent += 1
 
-        log.info("Media sent", platform=platform_name, chat_id=chat.id, files=len(sendable))
+        log.info("Media sent", platform=platform_name, chat_id=chat.id, files=files_sent)
 
     except TelegramError as e:
         log.warning("Media send failed", error=str(e))
