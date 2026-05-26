@@ -18,6 +18,7 @@ import asyncio
 import os
 import re
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -210,7 +211,11 @@ async def _process_url(update: Update, context, url: str) -> None:
         except (Exception,) as e:
             err = str(e)
             err_type = type(e).__name__
-            log.warning("ParseHub parse failed", url=url, error=err, err_type=err_type)
+            log.warning(
+                "ParseHub parse failed",
+                url=url, error=err, err_type=err_type,
+                traceback=traceback.format_exc(),
+            )
             if _is_auth_error(err):
                 if cookie:
                     await _notify_cookie_expired(context, url, err)

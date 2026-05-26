@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import traceback
 from typing import Optional
 
 import aiohttp
@@ -347,24 +348,28 @@ async def cmd_testcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
     except Exception as e:
         err = str(e)
-        diagnosis = ""
-        if "401" in err or "403" in err or "unauthorized" in err.lower():
-            diagnosis = (
-                "\n\n🔍 <b>诊断</b>：收到 401/403，Cookie 已被平台拒绝。\n"
-                "常见原因：\n"
-                "• Cookie 与登录 IP 绑定，服务器 IP 不同导致失效\n"
-                "• Cookie 已过期，需重新登录后导出\n"
-                "• Cookie 格式不对，应使用 Cookie-Editor → Export → <b>Header String</b> 格式"
-            )
-        elif "login" in err.lower() or "sign" in err.lower():
-            diagnosis = "\n\n🔍 <b>诊断</b>：平台要求登录，Cookie 无效或未被识别。"
-        elif "unknown" in err.lower() or "platform" in err.lower():
-            diagnosis = "\n\n🔍 <b>诊断</b>：ParseHub 不识别该 URL，请换一个具体的内容链接（非首页）。"
+        err_type = type(e).__name__
+        tb = traceback.format_exc()
+        log.warning(
+            "testcookie ParseHub failure",
+            url=test_url, err=err, err_type=err_type, traceback=tb,
+        )
+
+        # Walk chained exceptions to find the underlying cause
+        cause = e.__cause__ or e.__context__
+        cause_str = ""
+        while cause:
+            cause_str += f"\n↳ {type(cause).__name__}: {str(cause)[:200]}"
+            nxt = cause.__cause__ or cause.__context__
+            if nxt is cause:
+                break
+            cause = nxt
 
         await status_msg.edit_text(
-            f"❌ <b>解析失败</b>\n\n"
+            f"❌ <b>解析失败（{err_type}）</b>\n\n"
             f"错误：<code>{err[:300]}</code>"
-            f"{diagnosis}",
+            f"{('<b>底层原因</b>：<code>' + cause_str[:400] + '</code>') if cause_str else ''}\n\n"
+            f"💡 完整 traceback 已写入 docker 日志，用 <code>/debugparse {test_url}</code> 可绕过 ParseHub 直接调用 yt-dlp 拿真错误",
             parse_mode="HTML",
         )
 
@@ -406,9 +411,64 @@ async def cmd_checkcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+@owner_only
+async def cmd_debugparse(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Usage: /debugparse <url> — call yt-dlp directly to surface real error."""
+    msg = update.effective_message
+    args = context.args or []
+    if not args:
+        await msg.reply_text(
+            "用法：<code>/debugparse &lt;URL&gt;</code>\n\n"
+            "直接调用 yt-dlp 解析（绕过 ParseHub 包装层），显示真实错误。",
+            parse_mode="HTML",
+        )
+        return
+
+    url = args[0]
+    status_msg = await msg.reply_text(f"⏳ 正在用 yt-dlp 直接解析…\n<code>{url[:80]}</code>", parse_mode="HTML")
+
+    def _yt_dlp_call():
+        import yt_dlp
+        opts = {"quiet": True, "no_warnings": True, "skip_download": True, "simulate": True}
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    try:
+        info = await asyncio.wait_for(asyncio.to_thread(_yt_dlp_call), timeout=30)
+        title = (info.get("title") or "")[:120] if info else "（无）"
+        extractor = info.get("extractor", "?") if info else "?"
+        n_formats = len(info.get("formats", [])) if info else 0
+        await status_msg.edit_text(
+            f"✅ <b>yt-dlp 直接调用成功</b>\n\n"
+            f"提取器：<code>{extractor}</code>\n"
+            f"标题：{title}\n"
+            f"可用格式数：{n_formats}\n\n"
+            f"说明：yt-dlp 能解析说明 URL 本身没问题。"
+            f"如果 ParseHub 失败，是 ParseHub 自己的 bug 或对 yt-dlp 输出处理有问题。",
+            parse_mode="HTML",
+        )
+    except asyncio.TimeoutError:
+        await status_msg.edit_text("⏱ yt-dlp 调用超时（30s）")
+    except Exception as e:
+        err = str(e)
+        err_type = type(e).__name__
+        tb = traceback.format_exc()
+        log.warning("debugparse yt-dlp failure", url=url, err=err, err_type=err_type, traceback=tb)
+        await status_msg.edit_text(
+            f"❌ <b>yt-dlp 也失败了（{err_type}）</b>\n\n"
+            f"<code>{err[:600]}</code>\n\n"
+            f"这是 yt-dlp 的真实错误。常见原因：\n"
+            f"• <b>412 / -352</b> — Bilibili 风控拦截（服务器 IP 被识别为爬虫）\n"
+            f"• <b>需要登录</b> — 加上对应平台 Cookie 重试\n"
+            f"• <b>视频已删除/私有</b>",
+            parse_mode="HTML",
+        )
+
+
 def setup(application: Application) -> None:
     application.add_handler(CommandHandler("testcookie", cmd_testcookie))
     application.add_handler(CommandHandler("checkcookies", cmd_checkcookies))
+    application.add_handler(CommandHandler("debugparse", cmd_debugparse))
 
     interval_secs = _CHECK_INTERVAL_HOURS * 3600
     application.job_queue.run_repeating(
