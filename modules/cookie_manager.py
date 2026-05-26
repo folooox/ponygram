@@ -415,9 +415,77 @@ async def cmd_checkcookies(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     )
 
 
+@owner_only
+async def cmd_checkip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show the bot's outbound IP (verifies WARP proxy is working)."""
+    msg = update.effective_message
+    status = await msg.reply_text("⏳ 正在查询出站 IP…")
+
+    results = []
+    # Query both with and without proxy override to compare
+    async def _ip(use_proxy: bool) -> str:
+        try:
+            connector = None
+            kw = {}
+            if not use_proxy:
+                # Force direct connection by clearing trust_env
+                kw["trust_env"] = False
+            async with aiohttp.ClientSession(**kw) as s:
+                async with s.get(
+                    "https://api.ipify.org?format=json",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as r:
+                    data = await r.json()
+                    return data.get("ip", "?")
+        except Exception as e:
+            return f"error: {type(e).__name__}: {str(e)[:80]}"
+
+    # aiohttp doesn't auto-use env proxies; both calls are direct.
+    # To actually test WARP, query through a SOCKS5 proxy explicitly if configured.
+    direct_ip = await _ip(use_proxy=False)
+
+    # Try via the configured proxy if any
+    proxied_ip = "（未配置代理）"
+    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("ALL_PROXY")
+    if proxy:
+        try:
+            from aiohttp_socks import ProxyConnector  # type: ignore
+            connector = ProxyConnector.from_url(proxy)
+            async with aiohttp.ClientSession(connector=connector) as s:
+                async with s.get(
+                    "https://api.ipify.org?format=json",
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as r:
+                    data = await r.json()
+                    proxied_ip = data.get("ip", "?")
+        except ImportError:
+            # Fall back to httpx which supports socks natively
+            try:
+                import httpx
+                async with httpx.AsyncClient(proxy=proxy, timeout=15) as c:
+                    r = await c.get("https://api.ipify.org?format=json")
+                    proxied_ip = r.json().get("ip", "?")
+            except Exception as e:
+                proxied_ip = f"error: {type(e).__name__}: {str(e)[:80]}"
+        except Exception as e:
+            proxied_ip = f"error: {type(e).__name__}: {str(e)[:80]}"
+
+    ok = proxied_ip != direct_ip and not proxied_ip.startswith("error") and not proxied_ip.startswith("（")
+
+    await status.edit_text(
+        f"<b>出站 IP 检查</b>\n\n"
+        f"🌐 直连 IP：<code>{html.escape(direct_ip)}</code>\n"
+        f"🔀 经代理 IP：<code>{html.escape(proxied_ip)}</code>\n"
+        f"代理配置：<code>{html.escape(proxy or '未设置')}</code>\n\n"
+        f"{'✅ WARP 工作正常（IP 已变化）' if ok else '⚠️ 代理未生效或失败'}",
+        parse_mode="HTML",
+    )
+
+
 def setup(application: Application) -> None:
     application.add_handler(CommandHandler("testcookie", cmd_testcookie))
     application.add_handler(CommandHandler("checkcookies", cmd_checkcookies))
+    application.add_handler(CommandHandler("checkip", cmd_checkip))
 
     interval_secs = _CHECK_INTERVAL_HOURS * 3600
     application.job_queue.run_repeating(

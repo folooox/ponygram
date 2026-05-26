@@ -1,8 +1,30 @@
 services:
+  warp:
+    image: caomingjun/warp
+    container_name: ponygram-warp
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 0
+      net.ipv4.conf.all.src_valid_mark: 1
+    volumes:
+      - ./warp_data:/var/lib/cloudflare-warp
+    # SOCKS5 proxy on internal port 1080 (not exposed to host)
+
   ponygram:
     build: .
     restart: unless-stopped
     env_file: .env
+    depends_on:
+      - warp
+    environment:
+      # ParseHub / yt-dlp / httpx 出站走 WARP（绕 Bilibili/YouTube 风控）
+      HTTP_PROXY: socks5://warp:1080
+      HTTPS_PROXY: socks5://warp:1080
+      ALL_PROXY: socks5://warp:1080
+      # Telegram / Claude / TMDB / Last.fm / Google Books 走直连（不经 WARP）
+      NO_PROXY: api.telegram.org,api.anthropic.com,api.themoviedb.org,ws.audioscrobbler.com,books.googleapis.com,googleapis.com,localhost,127.0.0.1
     volumes:
       - ./data:/app/data
       - ./logs:/app/logs
