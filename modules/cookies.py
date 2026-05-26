@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from bot.database import delete_bot_config, get_all_bot_configs, set_bot_config
 from bot.logger import get_logger
 from bot.permissions import owner_only
+from bot.utils import normalize_cookie
 
 log = get_logger(__name__)
 
@@ -71,10 +72,15 @@ async def cmd_setcookie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
 
-    await set_bot_config(db_key, cookie_str)
+    normalized, count = normalize_cookie(cookie_str)
+    if not normalized:
+        await msg.reply_text("❌ 无法识别 Cookie 格式，请使用 Header String / JSON / Netscape 格式。")
+        return
+    await set_bot_config(db_key, normalized)
     display = _DISPLAY.get(db_key, platform)
-    log.info("Cookie updated", platform=display)
-    await msg.reply_text(f"✅ {display} Cookie 已更新（{len(cookie_str)} 字符）")
+    log.info("Cookie updated", platform=display, cookie_count=count)
+    fmt = "Header String" if ";" in cookie_str and "[" not in cookie_str else ("JSON" if cookie_str.startswith("[") else "Netscape")
+    await msg.reply_text(f"✅ {display} Cookie 已更新\n识别格式：{fmt}\n共 {count} 条 Cookie")
 
 
 @owner_only

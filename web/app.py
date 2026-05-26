@@ -47,6 +47,7 @@ from bot.database import (
     set_feed_paused,
     set_group_field,
 )
+from bot.utils import normalize_cookie
 from sqlalchemy import func, select
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -662,7 +663,8 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             if val == "__CLEAR__":
                 await delete_bot_config(key)
             elif val:
-                await set_bot_config(key, val)
+                normalized, count = normalize_cookie(val)
+                await set_bot_config(key, normalized if normalized else val)
 
         return RedirectResponse(url="/settings?saved=1", status_code=303)
 
