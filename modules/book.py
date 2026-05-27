@@ -8,12 +8,13 @@ Results cached 1 hour per query.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import book_cache
 from bot.logger import get_logger
@@ -126,6 +127,36 @@ async def on_book_button(update: Update, context) -> None:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+async def cmd_book(update: Update, context) -> None:
+    msg = update.effective_message
+    if not context.args:
+        await msg.reply_text("用法：/book <书名或关键词>")
+        return
+    query = " ".join(context.args)
+    status = await msg.reply_text("🔍 搜索中…")
+    items = await search_books(query)
+    await status.delete()
+    if not items:
+        await msg.reply_text(f"❌ 未找到：{query}")
+        return
+
+    short_key = hashlib.md5(f"book:{query.lower()}".encode()).hexdigest()[:16]
+    await book_cache.set(short_key, items)
+
+    text = _format_book(items[0])
+    buttons = []
+    for i, r in enumerate(items[1:4], start=2):
+        info = r.get("volumeInfo", {})
+        title = info.get("title", "?")[:28]
+        year = info.get("publishedDate", "")[:4]
+        label = f"{i}. {title}（{year}）" if year else f"{i}. {title}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{short_key}:{i-1}"))
+    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+                         disable_web_page_preview=True)
+
+
 def setup(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(on_book_button, pattern=r"^book:"))
+    application.add_handler(CommandHandler("book", cmd_book))
     log.info("book module loaded")

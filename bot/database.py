@@ -396,14 +396,10 @@ async def clear_warns(chat_id: int, user_id: int) -> int:
     """Remove all warnings for user in chat. Returns count removed."""
     async with get_session() as s:
         result = await s.execute(
-            select(UserWarn).where(UserWarn.chat_id == chat_id, UserWarn.user_id == user_id)
+            delete(UserWarn).where(UserWarn.chat_id == chat_id, UserWarn.user_id == user_id)
         )
-        rows = result.scalars().all()
-        count = len(rows)
-        for row in rows:
-            await s.delete(row)
         await s.commit()
-        return count
+        return result.rowcount
 
 
 # ---------------------------------------------------------------------------

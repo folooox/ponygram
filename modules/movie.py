@@ -13,9 +13,11 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 from typing import Optional as _Optional
 
+import hashlib
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import movie_cache
 from bot.database import get_bot_config
@@ -128,6 +130,57 @@ async def on_tmdb_button(update: Update, context) -> None:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+async def _cmd_search(update: Update, context, media_type: str) -> None:
+    msg = update.effective_message
+    if not context.args:
+        label = "电影" if media_type == "movie" else "剧集"
+        await msg.reply_text(f"用法：/{media_type if media_type == 'movie' else 'tv'} <{label}名>")
+        return
+    query = " ".join(context.args)
+    status = await msg.reply_text("🔍 搜索中…")
+    results = await search_tmdb(query, media_type, context)
+    await status.delete()
+    if results is None:
+        await msg.reply_text("❌ TMDB API 未配置，请在 Web 面板 → 设置 中添加 TMDB API Key")
+        return
+    if not results:
+        await msg.reply_text(f"❌ 未找到：{query}")
+        return
+
+    short_key = hashlib.md5(f"{media_type}:{query.lower()}".encode()).hexdigest()[:16]
+    await movie_cache.set(short_key, results)
+
+    item = results[0]
+    text = _format_movie(item, media_type)
+    buttons = []
+    for i, r in enumerate(results[1:4], start=2):
+        title = (r.get("title") or r.get("name", "?"))[:25]
+        year = (r.get("release_date") or r.get("first_air_date", ""))[:4]
+        label = f"{i}. {title}（{year}）" if year else f"{i}. {title}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"tmdb:{media_type}:{short_key}:{i-1}"))
+    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+
+    poster = item.get("poster_path")
+    if poster:
+        await msg.reply_photo(
+            f"{_IMG_BASE}{poster}",
+            caption=text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+        )
+    else:
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
+                              disable_web_page_preview=True)
+
+
+async def cmd_movie(update: Update, context) -> None:
+    await _cmd_search(update, context, "movie")
+
+
+async def cmd_tv(update: Update, context) -> None:
+    await _cmd_search(update, context, "tv")
+
+
 def setup(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(on_tmdb_button, pattern=r"^tmdb:"))
+    application.add_handler(CommandHandler("movie", cmd_movie))
+    application.add_handler(CommandHandler("tv", cmd_tv))
     log.info("movie module loaded")

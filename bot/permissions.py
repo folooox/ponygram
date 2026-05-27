@@ -44,7 +44,7 @@ def admin_only(func: Callable) -> Callable:
             if member.status in (ChatMember.ADMINISTRATOR, ChatMember.OWNER):
                 return await func(update, context)
         await update.effective_message.reply_text(
-            "This command is for administrators only."
+            "❌ 仅群管理员可使用此命令"
         )
     return wrapper
 
@@ -58,7 +58,7 @@ def owner_only(func: Callable) -> Callable:
         if user and cfg and cfg.is_owner(user.id):
             return await func(update, context)
         await update.effective_message.reply_text(
-            "This command is for the bot owner only."
+            "❌ 仅 Bot 所有者可使用此命令"
         )
     return wrapper
 
@@ -71,7 +71,7 @@ def group_only(func: Callable) -> Callable:
         if chat and chat.type in ("group", "supergroup"):
             return await func(update, context)
         await update.effective_message.reply_text(
-            "This command only works inside a group."
+            "❌ 此命令仅可在群组中使用"
         )
     return wrapper
 

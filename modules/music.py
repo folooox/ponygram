@@ -8,12 +8,13 @@ Results cached 30 minutes per query.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CallbackQueryHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import music_cache
 from bot.database import get_bot_config
@@ -215,6 +216,69 @@ async def on_music_button(update: Update, context) -> None:
                                       reply_markup=keyboard, disable_web_page_preview=True)
 
 
+async def cmd_music(update: Update, context) -> None:
+    msg = update.effective_message
+    if not context.args:
+        await msg.reply_text("用法：/music <歌手 - 歌曲名>  或  /music <歌曲名>")
+        return
+    query = " ".join(context.args)
+    status = await msg.reply_text("🔍 搜索中…")
+    results = await search_tracks(query, context)
+    await status.delete()
+    if results is None:
+        await msg.reply_text("❌ Last.fm API 未配置，请在 Web 面板 → 设置 中添加 API Key")
+        return
+    if not results:
+        await msg.reply_text(f"❌ 未找到：{query}")
+        return
+
+    short_key = hashlib.md5(f"track:{query.lower()}".encode()).hexdigest()[:16]
+    await music_cache.set(short_key, results)
+
+    api_key = await _get_api_key(context)
+    top = results[0]
+    detail = None
+    if api_key:
+        d = await _lastfm("track.getInfo", api_key,
+                          artist=top.get("artist", ""), track=top.get("name", ""))
+        detail = d.get("track", top) if d else top
+    text = _format_track(detail or top)
+
+    buttons = []
+    for i, t in enumerate(results[1:4], start=2):
+        a = t.get("artist", "?")
+        n = t.get("name", "?")[:22]
+        buttons.append(InlineKeyboardButton(
+            f"{i}. {n} — {a[:12]}",
+            callback_data=f"music:track:{short_key}:{i-1}",
+        ))
+    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+    await msg.reply_text(text, parse_mode=ParseMode.HTML,
+                         reply_markup=keyboard, disable_web_page_preview=True)
+
+
+async def cmd_artist(update: Update, context) -> None:
+    msg = update.effective_message
+    if not context.args:
+        await msg.reply_text("用法：/artist <歌手名>")
+        return
+    name = " ".join(context.args)
+    status = await msg.reply_text("🔍 搜索中…")
+    result = await search_artist(name, context)
+    await status.delete()
+    if result is None:
+        await msg.reply_text("❌ Last.fm API 未配置，请在 Web 面板 → 设置 中添加 API Key")
+        return
+    artist, top_tracks = result
+    if not artist:
+        await msg.reply_text(f"❌ 未找到歌手：{name}")
+        return
+    text = _format_artist(artist, top_tracks)
+    await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+
 def setup(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(on_music_button, pattern=r"^music:"))
+    application.add_handler(CommandHandler("music", cmd_music))
+    application.add_handler(CommandHandler("artist", cmd_artist))
     log.info("music module loaded")

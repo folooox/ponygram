@@ -1,21 +1,21 @@
 """
-Group administration commands.
+群组管理命令。
 
-Commands (all require Telegram group admin status):
-/mute   [duration] — restrict a user from sending messages
-/unmute            — lift a mute
-/kick              — remove a user from the group
-/ban               — ban a user permanently
-/unban             — lift a ban
-/warn   [reason]   — warn a user (auto-bans at warn_limit, configurable via Web UI)
-/warns             — show warnings for a user
-/clearwarns        — remove all warnings for a user
-/pin   [loud]      — pin the replied-to message
-/unpin             — unpin a message
+命令（均需群管理员权限）：
+/mute   [时长] — 禁止用户发言
+/unmute        — 解除禁言
+/kick          — 踢出用户（可重新加入）
+/ban           — 永久封禁
+/unban         — 解除封禁
+/warn   [原因] — 警告用户（达到上限自动封禁）
+/warns         — 查看用户警告记录
+/clearwarns    — 清除用户所有警告
+/pin   [loud]  — 置顶消息（加 loud 发送通知）
+/unpin         — 取消置顶
+/rules         — 查看群规
 
-All commands work by replying to a message or passing a user ID / @username.
-Duration for /mute: e.g. 1h, 30m, 2d  (default: indefinite)
-Blacklist and warn-limit are managed via the Web Admin UI.
+支持：回复消息 / 用户 ID / @用户名
+时长格式：1h、30m、2d（不填则永久）
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Optional, Tuple
 
 from telegram import Update, ChatPermissions
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler
 
 from bot.database import (
@@ -45,28 +45,32 @@ log = get_logger(__name__)
 _DURATION_RE = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
 _DURATION_MAP = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
+_NO_TARGET = "❌ 请回复某条消息，或提供用户 ID / @用户名"
+
 
 def _parse_duration(text: str) -> Optional[int]:
-    """Return duration in seconds or None if unparseable."""
     m = _DURATION_RE.match(text.strip())
     if not m:
         return None
     return int(m.group(1)) * _DURATION_MAP[m.group(2).lower()]
 
 
+def _duration_label(secs: int) -> str:
+    if secs % 86400 == 0:
+        return f"{secs // 86400}天"
+    if secs % 3600 == 0:
+        return f"{secs // 3600}小时"
+    if secs % 60 == 0:
+        return f"{secs // 60}分钟"
+    return f"{secs}秒"
+
+
 async def _resolve_target(update: Update, context) -> Tuple[Optional[int], str]:
-    """
-    Return (user_id, display_name) from a reply or first arg.
-    Supports: reply-to-message, integer user ID, or @username.
-    Returns (None, "") if nothing could be resolved.
-    """
     msg = update.effective_message
     chat = update.effective_chat
-    # Prefer replied-to message
     if msg.reply_to_message and msg.reply_to_message.from_user:
         u = msg.reply_to_message.from_user
         return u.id, u.first_name or str(u.id)
-    # Fall back to first argument: integer ID or @username
     if context.args:
         raw = context.args[0]
         if raw.lstrip("-").isdigit():
@@ -90,7 +94,7 @@ async def cmd_mute(update: Update, context) -> None:
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     until: Optional[datetime] = None
@@ -99,26 +103,23 @@ async def cmd_mute(update: Update, context) -> None:
         secs = _parse_duration(a)
         if secs:
             until = datetime.utcnow() + timedelta(seconds=secs)
-            duration_str = f" for {a}"
+            duration_str = f" {_duration_label(secs)}"
             break
 
     try:
         await chat.restrict_member(
             user_id,
-            permissions=ChatPermissions(
-                can_send_messages=False,
-                can_send_other_messages=False,
-                can_add_web_page_previews=False,
-            ),
+            permissions=ChatPermissions(can_send_messages=False),
             until_date=until,
         )
+        suffix = f"（{duration_str.strip()}）" if duration_str else "（永久）"
         await msg.reply_text(
-            f"🔇 Muted {name} (`{user_id}`){duration_str}.",
+            f"🔇 已禁言 *{name}*{suffix}",
             parse_mode=ParseMode.MARKDOWN,
         )
         log.info("User muted", user_id=user_id, chat_id=chat.id, until=until)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to mute: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 禁言失败：{e}")
 
 
 @group_only
@@ -130,20 +131,33 @@ async def cmd_unmute(update: Update, context) -> None:
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     try:
-        await chat.restrict_member(user_id, permissions=chat.permissions or ChatPermissions(
+        # 获取群组当前默认权限，确保完整恢复
+        full_chat = await context.bot.get_chat(chat.id)
+        perms = full_chat.permissions or ChatPermissions(
             can_send_messages=True,
+            can_send_audios=True,
+            can_send_documents=True,
+            can_send_photos=True,
+            can_send_videos=True,
+            can_send_video_notes=True,
+            can_send_voice_notes=True,
+            can_send_polls=True,
             can_send_other_messages=True,
             can_add_web_page_previews=True,
-            can_send_polls=True,
-        ))
-        await msg.reply_text(f"🔊 Unmuted {name} (`{user_id}`).", parse_mode=ParseMode.MARKDOWN)
+            can_invite_users=True,
+        )
+        await chat.restrict_member(user_id, permissions=perms)
+        await msg.reply_text(
+            f"🔊 已解除禁言：*{name}*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         log.info("User unmuted", user_id=user_id, chat_id=chat.id)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to unmute: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 解除禁言失败：{e}")
 
 
 @group_only
@@ -155,16 +169,19 @@ async def cmd_kick(update: Update, context) -> None:
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     try:
         await chat.ban_member(user_id)
-        await chat.unban_member(user_id)  # unban so they can rejoin
-        await msg.reply_text(f"👢 Kicked {name} (`{user_id}`).", parse_mode=ParseMode.MARKDOWN)
+        await chat.unban_member(user_id)
+        await msg.reply_text(
+            f"👢 已踢出：*{name}*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         log.info("User kicked", user_id=user_id, chat_id=chat.id)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to kick: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 踢出失败：{e}")
 
 
 @group_only
@@ -176,20 +193,21 @@ async def cmd_ban(update: Update, context) -> None:
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
+        await msg.reply_text(_NO_TARGET)
         return
 
-    reason = " ".join(context.args[1:]) if (msg.reply_to_message and context.args) else ""
+    args = context.args or []
+    reason = " ".join(args[1:] if not msg.reply_to_message and args else args)
 
     try:
         await chat.ban_member(user_id)
-        text = f"🚫 Banned {name} (`{user_id}`)."
+        text = f"🚫 已封禁：*{name}*"
         if reason:
-            text += f"\nReason: {reason}"
+            text += f"\n原因：{reason}"
         await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         log.info("User banned", user_id=user_id, chat_id=chat.id, reason=reason)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to ban: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 封禁失败：{e}")
 
 
 @group_only
@@ -201,32 +219,34 @@ async def cmd_unban(update: Update, context) -> None:
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     try:
         await chat.unban_member(user_id)
-        await msg.reply_text(f"✅ Unbanned {name} (`{user_id}`).", parse_mode=ParseMode.MARKDOWN)
+        await msg.reply_text(
+            f"✅ 已解封：*{name}*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
         log.info("User unbanned", user_id=user_id, chat_id=chat.id)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to unban: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 解封失败：{e}")
 
 
 # ---------------------------------------------------------------------------
-# Warn system
+# 警告系统
 # ---------------------------------------------------------------------------
 
 @group_only
 @admin_only
 async def cmd_warn(update: Update, context) -> None:
-    """/warn [reason] — warn a user; auto-bans at warn_limit."""
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID / @username.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     args = context.args or []
@@ -240,26 +260,23 @@ async def cmd_warn(update: Update, context) -> None:
     if count >= limit:
         try:
             await chat.ban_member(user_id)
-        except BadRequest:
+        except TelegramError:
             pass
-        await msg.reply_text(
-            f"🚫 {name} (`{user_id}`) reached {count}/{limit} warnings and was banned."
-            + (f"\nLast reason: {reason}" if reason else ""),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        text = f"🚫 *{name}* 警告次数达到上限（{count}/{limit}），已自动封禁"
+        if reason:
+            text += f"\n最后原因：{reason}"
+        await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN)
         log.info("User auto-banned after warn limit", user_id=user_id, chat_id=chat.id)
     else:
-        await msg.reply_text(
-            f"⚠️ {name} (`{user_id}`) warned ({count}/{limit})."
-            + (f"\nReason: {reason}" if reason else ""),
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        text = f"⚠️ *{name}* 已被警告（{count}/{limit}）"
+        if reason:
+            text += f"\n原因：{reason}"
+        await msg.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     log.info("User warned", user_id=user_id, chat_id=chat.id, count=count)
 
 
 @group_only
 async def cmd_warns(update: Update, context) -> None:
-    """/warns — show warnings for a user (reply or own stats if no target)."""
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
@@ -270,7 +287,7 @@ async def cmd_warns(update: Update, context) -> None:
         if user:
             user_id, name = user.id, user.first_name or str(user.id)
         else:
-            await msg.reply_text("Reply to a message or provide a user ID.")
+            await msg.reply_text(_NO_TARGET)
             return
 
     warns = await get_warns(chat.id, user_id)
@@ -278,52 +295,50 @@ async def cmd_warns(update: Update, context) -> None:
     limit = settings.warn_limit or 3
 
     if not warns:
-        await msg.reply_text(f"✅ {name} has no warnings in this chat.")
+        await msg.reply_text(f"✅ *{name}* 在本群没有警告记录", parse_mode=ParseMode.MARKDOWN)
         return
 
-    lines = [f"⚠️ *{name}* — {len(warns)}/{limit} warning(s):"]
+    lines = [f"⚠️ *{name}* — {len(warns)}/{limit} 条警告："]
     for i, w in enumerate(warns, 1):
         date_str = w.warned_at.strftime("%Y-%m-%d")
-        reason_str = w.reason or "(no reason)"
-        lines.append(f"  {i}. {date_str}: {reason_str}")
+        reason_str = w.reason or "（无原因）"
+        lines.append(f"  {i}. {date_str}：{reason_str}")
     await msg.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
 @group_only
 @admin_only
 async def cmd_clearwarns(update: Update, context) -> None:
-    """/clearwarns — remove all warnings for a user."""
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
 
     user_id, name = await _resolve_target(update, context)
     if not user_id:
-        await msg.reply_text("Reply to a message or provide a user ID / @username.")
+        await msg.reply_text(_NO_TARGET)
         return
 
     count = await clear_warns(chat.id, user_id)
     await msg.reply_text(
-        f"✅ Cleared {count} warning(s) for {name} (`{user_id}`).",
+        f"✅ 已清除 *{name}* 的 {count} 条警告",
         parse_mode=ParseMode.MARKDOWN,
     )
     log.info("Warnings cleared", user_id=user_id, chat_id=chat.id, count=count)
 
 
 # ---------------------------------------------------------------------------
-# Pin / unpin
+# 置顶
 # ---------------------------------------------------------------------------
 
 @group_only
 @admin_only
 async def cmd_pin(update: Update, context) -> None:
-    """/pin [loud] — pin the replied-to message; add 'loud' to notify members."""
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
 
     if not msg.reply_to_message:
-        await msg.reply_text("Reply to a message to pin it.")
+        await msg.reply_text("❌ 请回复要置顶的消息")
         return
 
     loud = bool(context.args) and context.args[0].lower() == "loud"
@@ -333,16 +348,15 @@ async def cmd_pin(update: Update, context) -> None:
             msg.reply_to_message.message_id,
             disable_notification=not loud,
         )
-        await msg.reply_text("📌 Message pinned.")
+        await msg.reply_text("📌 消息已置顶")
         log.info("Message pinned", chat_id=chat.id, msg_id=msg.reply_to_message.message_id)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to pin: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 置顶失败：{e}")
 
 
 @group_only
 @admin_only
 async def cmd_unpin(update: Update, context) -> None:
-    """/unpin — unpin the replied-to message (or most recent pin)."""
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
@@ -352,14 +366,13 @@ async def cmd_unpin(update: Update, context) -> None:
             await context.bot.unpin_chat_message(chat.id, msg.reply_to_message.message_id)
         else:
             await context.bot.unpin_chat_message(chat.id)
-        await msg.reply_text("📌 Message unpinned.")
+        await msg.reply_text("📌 已取消置顶")
         log.info("Message unpinned", chat_id=chat.id)
-    except BadRequest as e:
-        await msg.reply_text(f"Failed to unpin: {e}")
+    except TelegramError as e:
+        await msg.reply_text(f"❌ 取消置顶失败：{e}")
 
 
 async def cmd_rules(update: Update, context) -> None:
-    """/rules — show this group's rules (set via Web Admin)."""
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat:
@@ -375,17 +388,17 @@ async def cmd_rules(update: Update, context) -> None:
 
 def setup(application: Application) -> None:
     cmds = [
-        ("mute",       cmd_mute,       "Mute a user [duration: 1h/30m/2d]",  True),
-        ("unmute",     cmd_unmute,     "Unmute a user",                       True),
-        ("kick",       cmd_kick,       "Kick a user from the group",          True),
-        ("ban",        cmd_ban,        "Ban a user from the group",           True),
-        ("unban",      cmd_unban,      "Unban a user",                        True),
-        ("warn",       cmd_warn,       "Warn a user (auto-ban at limit)",     True),
-        ("warns",      cmd_warns,      "Show warnings for a user",            False),
-        ("clearwarns", cmd_clearwarns, "Clear all warnings for a user",       True),
-        ("pin",        cmd_pin,        "Pin a message [loud]",                True),
-        ("unpin",      cmd_unpin,      "Unpin a message",                     True),
-        ("rules",      cmd_rules,      "Show group rules",                    False),
+        ("mute",       cmd_mute,       "禁言用户 [时长: 1h/30m/2d]",   True),
+        ("unmute",     cmd_unmute,     "解除禁言",                       True),
+        ("kick",       cmd_kick,       "踢出用户（可重新加入）",          True),
+        ("ban",        cmd_ban,        "永久封禁用户",                   True),
+        ("unban",      cmd_unban,      "解除封禁",                       True),
+        ("warn",       cmd_warn,       "警告用户（达上限自动封禁）",      True),
+        ("warns",      cmd_warns,      "查看用户警告记录",               False),
+        ("clearwarns", cmd_clearwarns, "清除用户所有警告",               True),
+        ("pin",        cmd_pin,        "置顶消息 [loud]",               True),
+        ("unpin",      cmd_unpin,      "取消置顶",                       True),
+        ("rules",      cmd_rules,      "查看群规则",                     False),
     ]
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)
