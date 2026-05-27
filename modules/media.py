@@ -23,7 +23,8 @@ import traceback
 from pathlib import Path
 from typing import Optional
 
-from telegram import InputMediaPhoto, Update
+import aiohttp
+from telegram import InputMediaPhoto, InputMediaVideo, Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
@@ -86,7 +87,8 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 }
 
 _ph = None
-_LINK_EMOJI_ID: str | None = None  # custom emoji_id, fetched at startup
+_LINK_EMOJI_ID: str | None = None
+_TELEGRAPH_TOKEN: str | None = None
 
 
 def _is_known_url(url: str) -> bool:
@@ -133,6 +135,64 @@ async def _init_link_emoji(context) -> None:
         log.info("Link emoji loaded", emoji_id=_LINK_EMOJI_ID)
     except Exception as e:
         log.warning("Failed to fetch link emoji", error=str(e))
+
+
+async def _ensure_telegraph_token() -> str | None:
+    global _TELEGRAPH_TOKEN
+    if _TELEGRAPH_TOKEN:
+        return _TELEGRAPH_TOKEN
+    from bot.database import get_bot_config, set_bot_config
+    token = await get_bot_config("telegraph_token")
+    if not token:
+        try:
+            async with aiohttp.ClientSession() as s:
+                r = await s.post(
+                    "https://api.telegra.ph/createAccount",
+                    json={"short_name": "PonygramBot", "author_name": "Ponygram"},
+                )
+                d = await r.json()
+                token = d.get("result", {}).get("access_token")
+                if token:
+                    await set_bot_config("telegraph_token", token)
+        except Exception as e:
+            log.warning("Telegraph account creation failed", error=str(e))
+            return None
+    _TELEGRAPH_TOKEN = token
+    return token
+
+
+def _md_to_telegraph_nodes(md: str) -> list:
+    nodes = []
+    for line in md.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("# "):
+            nodes.append({"tag": "h3", "children": [line[2:]]})
+        elif line.startswith(("## ", "### ")):
+            nodes.append({"tag": "h4", "children": [line.lstrip("#").strip()]})
+        elif m := re.match(r"!\[.*?\]\((https?://\S+)\)", line):
+            nodes.append({"tag": "figure", "children": [
+                {"tag": "img", "attrs": {"src": m.group(1)}}
+            ]})
+        else:
+            nodes.append({"tag": "p", "children": [line]})
+    return nodes or [{"tag": "p", "children": [" "]}]
+
+
+async def _post_to_telegraph(title: str, nodes: list, token: str) -> str:
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(
+            "https://api.telegra.ph/createPage",
+            json={
+                "access_token": token,
+                "title": title[:256] or "Article",
+                "content": nodes,
+                "return_content": False,
+            },
+        )
+        d = await r.json()
+        return d["result"]["url"]
 
 
 async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
@@ -314,7 +374,7 @@ def _get_thumbnail(result) -> Optional[str]:
     return None
 
 
-def _get_files(dr) -> list[Path]:
+def _get_files(dr, skip_video_path: bool = False) -> list[Path]:
     media = getattr(dr, "media", None)
     if media is None:
         return []
@@ -324,9 +384,10 @@ def _get_files(dr) -> list[Path]:
         p = getattr(m, "path", None)
         if p:
             paths.append(Path(p))
-        vp = getattr(m, "video_path", None)
-        if vp:
-            paths.append(Path(vp))
+        if not skip_video_path:
+            vp = getattr(m, "video_path", None)
+            if vp:
+                paths.append(Path(vp))
     return [p for p in paths if p.exists()]
 
 
@@ -341,6 +402,9 @@ async def _process_url(update: Update, context, url: str) -> None:
 
     status = await msg.reply_text("⏳ 解析中…")
     tmp_dir = tempfile.mkdtemp(prefix="ponygram_")
+
+    is_weixin = "mp.weixin.qq.com" in url.lower()
+    is_xhs = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
 
     try:
         cookie = await _get_cookie(url)
@@ -397,6 +461,34 @@ async def _process_url(update: Update, context, url: str) -> None:
                 )
             return
 
+        # ------------------------------------------------------------------ #
+        # WeChat: post full article to Telegraph                              #
+        # ------------------------------------------------------------------ #
+        if is_weixin:
+            art_title = (getattr(result, "title", "") or "").strip()
+            md = (getattr(result, "markdown_content", "") or getattr(result, "content", "") or "").strip()
+            token = await _ensure_telegraph_token()
+            if token and md:
+                try:
+                    nodes = _md_to_telegraph_nodes(md)
+                    tg_url = await _post_to_telegraph(art_title, nodes, token)
+                    link_icon = (
+                        f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
+                        if _LINK_EMOJI_ID else "🔗"
+                    )
+                    await status.delete()
+                    status = None
+                    await context.bot.send_message(
+                        chat.id,
+                        text=f"<b>{html.escape(art_title)}</b>\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
+                        parse_mode=ParseMode.HTML,
+                        reply_to_message_id=msg.message_id,
+                    )
+                    return
+                except Exception as e:
+                    log.warning("Telegraph post failed, falling through", error=str(e))
+            # fallthrough to normal flow if telegraph fails
+
         platform_name = (
             getattr(getattr(result, "platform", None), "display_name", "")
             or "Media"
@@ -416,7 +508,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                 result.download(path=tmp_dir, proxy=proxy),
                 timeout=180,
             )
-            files = _get_files(dr)
+            files = _get_files(dr, skip_video_path=is_xhs)
         except (asyncio.TimeoutError, Exception) as e:
             log.warning("ParseHub download failed", url=url, error=str(e))
 
@@ -463,8 +555,6 @@ async def _process_url(update: Update, context, url: str) -> None:
             await _send_info_card("\n\n⚠️ <i>下载失败，请点击原链接查看</i>")
             return
 
-        sendable = files
-
         if status:
             await status.delete()
             status = None
@@ -475,22 +565,26 @@ async def _process_url(update: Update, context, url: str) -> None:
         _video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
         _audio_exts = {".mp3", ".m4a", ".ogg", ".opus", ".flac"}
 
-        photos = [f for f in sendable if f.suffix.lower() in _img_exts]
-        others = [f for f in sendable if f.suffix.lower() not in _img_exts]
+        group_items = [f for f in files if f.suffix.lower() in _img_exts | _video_exts]
+        singles     = [f for f in files if f.suffix.lower() not in _img_exts | _video_exts]
 
         files_sent = 0
 
-        if len(photos) >= 2:
-            fhs = [open(fp, "rb") for fp in photos[:10]]
+        if len(group_items) >= 2:
+            fhs = [open(fp, "rb") for fp in group_items[:10]]
             try:
-                media_group = [
-                    InputMediaPhoto(
-                        media=fh,
-                        caption=caption[:1024] if i == 0 else "",
-                        parse_mode=ParseMode.HTML,
-                    )
-                    for i, fh in enumerate(fhs)
-                ]
+                media_group = []
+                for i, (fp, fh) in enumerate(zip(group_items[:10], fhs)):
+                    c = caption[:1024] if i == 0 else ""
+                    if fp.suffix.lower() in _img_exts:
+                        media_group.append(InputMediaPhoto(
+                            media=fh, caption=c, parse_mode=ParseMode.HTML,
+                        ))
+                    else:
+                        media_group.append(InputMediaVideo(
+                            media=fh, caption=c, parse_mode=ParseMode.HTML,
+                            supports_streaming=True,
+                        ))
                 await context.bot.send_media_group(
                     chat.id,
                     media=media_group,
@@ -500,26 +594,29 @@ async def _process_url(update: Update, context, url: str) -> None:
             finally:
                 for fh in fhs:
                     fh.close()
-        elif len(photos) == 1:
-            with open(photos[0], "rb") as f:
-                await context.bot.send_photo(
-                    chat.id, photo=f, caption=caption[:1024],
-                    parse_mode=ParseMode.HTML, reply_to_message_id=msg.message_id,
-                )
+        elif len(group_items) == 1:
+            fp = group_items[0]
+            with open(fp, "rb") as f:
+                if fp.suffix.lower() in _img_exts:
+                    await context.bot.send_photo(
+                        chat.id, photo=f, caption=caption[:1024],
+                        parse_mode=ParseMode.HTML, reply_to_message_id=msg.message_id,
+                    )
+                else:
+                    await context.bot.send_video(
+                        chat.id, video=f, caption=caption[:1024],
+                        parse_mode=ParseMode.HTML, supports_streaming=True,
+                        reply_to_message_id=msg.message_id,
+                    )
             files_sent += 1
 
-        first_other = files_sent == 0
-        for fp in others[:10 - files_sent]:
+        first_single = files_sent == 0
+        for fp in singles[:10 - files_sent]:
             ext = fp.suffix.lower()
-            c = caption[:1024] if first_other else ""
-            first_other = False
+            c = caption[:1024] if first_single else ""
+            first_single = False
             with open(fp, "rb") as f:
-                if ext in _video_exts:
-                    await context.bot.send_video(
-                        chat.id, video=f, caption=c, parse_mode=ParseMode.HTML,
-                        supports_streaming=True, reply_to_message_id=msg.message_id,
-                    )
-                elif ext in _audio_exts:
+                if ext in _audio_exts:
                     await context.bot.send_audio(
                         chat.id, audio=f, caption=c, parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
