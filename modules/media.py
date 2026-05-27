@@ -185,6 +185,24 @@ def _parse_inline_md(text: str) -> list:
     return children or [text]
 
 
+def _first_paragraph(md: str, max_len: int = 200) -> str:
+    """Extract first non-header paragraph from markdown as plain text."""
+    for block in re.split(r'\n{2,}', md):
+        block = block.strip()
+        if not block or block.startswith('#'):
+            continue
+        # strip images and links, then inline markers
+        block = re.sub(r'!\[.*?\]\(.*?\)', '', block)
+        block = re.sub(r'\[(.+?)\]\(.*?\)', r'\1', block)
+        block = re.sub(r'\*\*(.+?)\*\*', r'\1', block)
+        block = re.sub(r'\*(.+?)\*', r'\1', block)
+        block = re.sub(r'`(.+?)`', r'\1', block)
+        block = block.strip()
+        if block:
+            return block[:max_len]
+    return ""
+
+
 def _md_to_telegraph_nodes(md: str) -> list:
     nodes = []
     for line in md.split("\n"):
@@ -551,11 +569,13 @@ async def _process_url(update: Update, context, url: str) -> None:
                         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
                         if _LINK_EMOJI_ID else "🔗"
                     )
+                    preview = _first_paragraph(md)
+                    preview_line = f"\n{html.escape(preview)}" if preview else ""
                     await status.delete()
                     status = None
                     await context.bot.send_message(
                         chat.id,
-                        text=f"<b>{html.escape(art_title)}</b>\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
+                        text=f"<b>{html.escape(art_title)}</b>{preview_line}\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
