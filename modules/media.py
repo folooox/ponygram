@@ -57,6 +57,7 @@ _KNOWN_DOMAINS = {
     "vimeo.com",
     "twitch.tv",
     "nicovideo.jp",
+    "mp.weixin.qq.com",
 }
 
 _AUTH_REQUIRED_PHRASES = (
@@ -333,41 +334,6 @@ async def _process_url(update: Update, context, url: str) -> None:
     try:
         cookie = await _get_cookie(url)
         proxy = _get_proxy()
-
-        # ------------------------------------------------------------------ #
-        # Bilibili: direct API parse (parsehub BiliAPI 不传 cookie 导致 412)  #
-        # ------------------------------------------------------------------ #
-        if any(d in url.lower() for d in _BILI_DOMAINS) and cookie:
-            try:
-                await status.edit_text("⏳ 解析中… (哔哩哔哩)")
-                bili_path, bili_title, bili_pic = await asyncio.wait_for(
-                    _bili_direct_parse(url, cookie, proxy, tmp_dir),
-                    timeout=180,
-                )
-                lines: list[str] = []
-                if bili_title:
-                    lines.append(f"🎬 <b>{html.escape(bili_title[:200])}</b>")
-                lines.append(f'🔗 <a href="{url}">哔哩哔哩</a>')
-                cap = "\n".join(lines)
-
-                if bili_path.exists():
-                    if status:
-                        await status.delete()
-                        status = None
-                    with open(bili_path, "rb") as vf:
-                        await context.bot.send_video(
-                            chat.id,
-                            video=vf,
-                            caption=cap[:1024],
-                            parse_mode=ParseMode.HTML,
-                            supports_streaming=True,
-                            reply_to_message_id=msg.message_id,
-                        )
-                    log.info("Bili direct ok", title=bili_title[:50])
-                return
-            except Exception as e:
-                log.warning("Bili direct parse failed, falling back to parsehub", error=str(e))
-                # fall through to parsehub
 
         # ------------------------------------------------------------------ #
         # Generic parsehub path                                               #
