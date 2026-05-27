@@ -89,6 +89,15 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 _LINK_EMOJI_ID: str | None = None
 _TELEGRAPH_TOKEN: str | None = None
 
+_XHS_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+    ),
+    "Referer": "https://www.xiaohongshu.com/",
+    "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+}
+
 # Inline markdown pattern: **bold**, *italic*, _italic_, `code`
 _INLINE_MD = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`", re.DOTALL)
 
@@ -388,6 +397,71 @@ async def _bili_direct_parse(
 
 
 # ---------------------------------------------------------------------------
+# XHS direct image downloader
+# ---------------------------------------------------------------------------
+
+async def _xhs_download_images(
+    result,
+    cookie: Optional[str],
+    proxy: Optional[str],
+    tmp_dir: str,
+) -> list[Path]:
+    """
+    Download all images from a parsed XHS result directly.
+
+    parsehub's generic download fails for XHS because the CDN requires the
+    Referer header and (for restricted posts) a login cookie.  We pull the
+    image URLs from result.media and download them ourselves.
+    """
+    import httpx
+
+    media = getattr(result, "media", None)
+    if not media:
+        return []
+    items = media if isinstance(media, (list, tuple)) else [media]
+
+    headers = dict(_XHS_HEADERS)
+    if cookie:
+        headers["Cookie"] = cookie
+
+    files: list[Path] = []
+    async with httpx.AsyncClient(
+        headers=headers,
+        proxy=proxy,
+        timeout=httpx.Timeout(15.0, read=60.0),
+        follow_redirects=True,
+    ) as client:
+        for i, m in enumerate(items):
+            img_url = (
+                getattr(m, "url", None)
+                or getattr(m, "thumb_url", None)
+            )
+            if not img_url:
+                continue
+            try:
+                resp = await client.get(img_url)
+                resp.raise_for_status()
+                ct = resp.headers.get("content-type", "")
+                if "webp" in ct:
+                    ext = ".webp"
+                elif "png" in ct:
+                    ext = ".png"
+                elif "gif" in ct:
+                    ext = ".gif"
+                else:
+                    ext = ".jpg"
+                out = Path(tmp_dir) / f"xhs_{i:03d}{ext}"
+                out.write_bytes(resp.content)
+                files.append(out)
+                log.debug("XHS image downloaded", index=i, size=len(resp.content))
+            except Exception as e:
+                log.warning("XHS image download failed", index=i, url=img_url[:80], error=str(e))
+
+    log.info("XHS direct download", total=len(items), saved=len(files))
+    return files
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -590,14 +664,28 @@ async def _process_url(update: Update, context, url: str) -> None:
         await context.bot.send_chat_action(chat.id, chat_action)
 
         files: list[Path] = []
-        try:
-            dr = await asyncio.wait_for(
-                result.download(path=tmp_dir, proxy=proxy),
-                timeout=180,
-            )
-            files = _get_files(dr, skip_video_path=is_xhs)
-        except (asyncio.TimeoutError, Exception) as e:
-            log.warning("ParseHub download failed", url=url, error=str(e))
+        if is_xhs:
+            # XHS CDN requires Referer + cookie; download images directly.
+            files = await _xhs_download_images(result, cookie, proxy, tmp_dir)
+            if not files:
+                # Fallback: let parsehub try (rarely works but worth attempting)
+                try:
+                    dr = await asyncio.wait_for(
+                        result.download(path=tmp_dir, proxy=proxy),
+                        timeout=180,
+                    )
+                    files = _get_files(dr, skip_video_path=True)
+                except (asyncio.TimeoutError, Exception) as e:
+                    log.warning("XHS parsehub fallback download also failed", url=url, error=str(e))
+        else:
+            try:
+                dr = await asyncio.wait_for(
+                    result.download(path=tmp_dir, proxy=proxy),
+                    timeout=180,
+                )
+                files = _get_files(dr, skip_video_path=False)
+            except (asyncio.TimeoutError, Exception) as e:
+                log.warning("ParseHub download failed", url=url, error=str(e))
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
