@@ -296,6 +296,69 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 cookie = await get_bot_config(key)
                 break
 
+        _BILI_DOMAINS = ("bilibili.com", "b23.tv", "bili2233.cn")
+        if any(d in url_lower for d in _BILI_DOMAINS):
+            import httpx
+            import re as _re
+            from modules.media import _bili_parse_cookie, _BILI_HEADERS
+            cookie_str = cookie or ""
+            cookies = _bili_parse_cookie(cookie_str) if cookie_str else {}
+            m = _re.search(r"BV[0-9A-Za-z]{10,}", url)
+            if not m:
+                return JSONResponse({"status": "error", "detail": "无法从 URL 中提取 BVID，请确认链接格式"})
+            bvid = m.group(0)
+            try:
+                async with httpx.AsyncClient(
+                    proxy=proxy, headers=_BILI_HEADERS, cookies=cookies,
+                    timeout=httpx.Timeout(20.0), follow_redirects=True
+                ) as client:
+                    r = await client.get(
+                        "https://api.bilibili.com/x/web-interface/view/detail",
+                        params={"bvid": bvid},
+                    )
+                    if r.status_code == 412:
+                        return JSONResponse({
+                            "status": "error",
+                            "detail": "触发B站风控 (412)，Cookie 可能已失效或 IP 被限制",
+                            "cookie_used": bool(cookies),
+                        })
+                    view_data = r.json()
+                    view = (view_data.get("data") or {}).get("View") or {}
+                    cid = view.get("cid")
+                    title = view.get("title", "")
+                    r2 = await client.get("https://api.bilibili.com/x/frontend/finger/spi")
+                    spi = (r2.json().get("data") or {})
+                    full_cookies = {**cookies, "buvid3": spi.get("b_3", ""), "buvid4": spi.get("b_4", "")}
+                    r3 = await client.get(
+                        "https://api.bilibili.com/x/player/playurl",
+                        params={"bvid": bvid, "cid": cid, "qn": 80, "fnver": 0, "fnval": 1},
+                        cookies=full_cookies,
+                    )
+                    pdata = r3.json().get("data") or {}
+                    durl = pdata.get("durl") or []
+                    video_url = durl[0].get("url", "") if durl else ""
+                return JSONResponse({
+                    "status": "ok",
+                    "platform": "哔哩哔哩",
+                    "bvid": bvid,
+                    "title": title[:100],
+                    "cid": cid,
+                    "quality": pdata.get("quality"),
+                    "video_url_preview": video_url[:80] if video_url else "（无法获取）",
+                    "proxy_used": proxy or None,
+                    "cookie_used": bool(cookies),
+                })
+            except Exception as e:
+                import traceback as _tb
+                return JSONResponse({
+                    "status": "error",
+                    "error_type": type(e).__name__,
+                    "detail": str(e)[:300],
+                    "traceback": _tb.format_exc()[-600:],
+                    "proxy_used": proxy or None,
+                    "cookie_used": bool(cookies),
+                })
+
         try:
             from parsehub import ParseHub
             from parsehub.errors import UnknownPlatform, ParseError
