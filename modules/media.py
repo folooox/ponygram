@@ -587,7 +587,7 @@ async def on_message_url(update: Update, context) -> None:
 def setup(application: Application) -> None:
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,
             on_message_url,
         ),
         group=20,
