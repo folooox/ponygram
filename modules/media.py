@@ -90,7 +90,7 @@ _ph = None
 _LINK_EMOJI_ID: str | None = None
 _TELEGRAPH_TOKEN: str | None = None
 
-# Inline markdown: **bold**, *italic*, _italic_, `code`
+# Inline markdown pattern: **bold**, *italic*, _italic_, `code`
 _INLINE_MD = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`", re.DOTALL)
 
 
@@ -270,10 +270,10 @@ async def _bili_direct_parse(
     cookie_str: str,
     proxy: Optional[str],
     tmp_dir: str,
-) -> tuple[Path, str, str, str]:
+) -> tuple[Path, str, str]:
     """
     Download a Bilibili video (BVID-based) at 720p using stored cookie.
-    Returns (video_path, title, thumbnail_url, up_name). Raises on any failure.
+    Returns (video_path, title, thumbnail_url). Raises on any failure.
     """
     import httpx
 
@@ -314,8 +314,7 @@ async def _bili_direct_parse(
         cid: int = view["cid"]
         title: str = view.get("title", "")
         pic: str = view.get("pic", "")
-        up_name: str = (view.get("owner") or {}).get("name", "") or ""
-        log.info("Bili video info ok", bvid=bvid, cid=cid, title=title[:40], up=up_name)
+        log.info("Bili video info ok", bvid=bvid, cid=cid, title=title[:40])
 
         # Step 2: buvid fingerprint
         r2 = await client.get("https://api.bilibili.com/x/frontend/finger/spi")
@@ -376,7 +375,7 @@ async def _bili_direct_parse(
                         f.write(chunk)
 
         log.info("Bili download ok", path=str(output), size_mb=round(output.stat().st_size / 1024 / 1024, 1))
-        return output, title, pic, up_name
+        return output, title, pic
 
 
 # ---------------------------------------------------------------------------
@@ -412,44 +411,20 @@ def _get_files(dr, skip_video_path: bool = False) -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
-def _make_caption(
-    title: str,
-    content: str,
-    url: str,
-    platform_name: str = "",
-    author: str | None = None,
-    author_handle: str | None = None,
-) -> str:
+def _make_caption(title: str, content: str, url: str) -> str:
     link_icon = (
         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
         if _LINK_EMOJI_ID else "🔗"
     )
     lines: list[str] = []
-
-    # Author line (above title, always outside blockquote)
-    author_clean   = html.escape((author        or "").strip())
-    handle_clean   = html.escape((author_handle or "").strip())
-    if author_clean and handle_clean:
-        lines.append(f"<b>{author_clean} ({handle_clean})</b>")
-    elif author_clean:
-        lines.append(f"<b>{author_clean}</b>")
-    elif handle_clean:
-        lines.append(f"<b>{handle_clean}</b>")
-
-    # Title line — always show; fall back to "无标题"
-    lines.append(f"<b>{title[:200]}</b>" if title else "<b>无标题</b>")
-
-    # Content (tags stay inside)
+    if title:
+        lines.append(f"<b>{title[:200]}</b>")
     if content:
         if len(content) > 300:
             lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
         else:
             lines.append(content)
-
-    # Source
-    src_label = f"<b>{html.escape(platform_name)}</b>" if platform_name else "Source"
-    lines.append(f'\n{link_icon} <a href="{url}">{src_label}</a>')
-
+    lines.append(f'\n{link_icon} <a href="{url}">Source</a>')
     return "\n".join(lines)
 
 
@@ -486,15 +461,11 @@ async def _process_url(update: Update, context, url: str) -> None:
             try:
                 await status.edit_text("⏳ 解析中… (Bilibili)")
                 await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
-                video_path, bili_title, bili_thumb, up_name = await asyncio.wait_for(
+                video_path, bili_title, bili_thumb = await asyncio.wait_for(
                     _bili_direct_parse(url, cookie, proxy, tmp_dir),
                     timeout=300,
                 )
-                caption = _make_caption(
-                    bili_title, "", url,
-                    platform_name="哔哩哩哩",
-                    author=up_name or None,
-                )
+                caption = _make_caption(bili_title, "", url)
                 await status.delete()
                 status = None
                 with open(video_path, "rb") as f:
@@ -595,7 +566,7 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         platform_name = (
             getattr(getattr(result, "platform", None), "display_name", "")
-            or ""
+            or "Media"
         )
         result_type = type(result).__name__
         chat_action = (
@@ -603,20 +574,8 @@ async def _process_url(update: Update, context, url: str) -> None:
             if "Image" in result_type or "RichText" in result_type
             else ChatAction.UPLOAD_VIDEO
         )
-        await status.edit_text(f"⏳ 解析中… ({platform_name or 'Media'})")
+        await status.edit_text(f"⏳ 解析中… ({platform_name})")
         await context.bot.send_chat_action(chat.id, chat_action)
-
-        # Build caption before download (doesn't depend on download result)
-        title         = (getattr(result, "title",         "") or "").strip()
-        content       = (getattr(result, "content",       "") or "").strip()
-        author        = (getattr(result, "author",        None) or "").strip() or None
-        author_handle = (getattr(result, "author_handle", None) or "").strip() or None
-        caption = _make_caption(
-            title, content, url,
-            platform_name=platform_name,
-            author=author,
-            author_handle=author_handle,
-        )
 
         files: list[Path] = []
         try:
@@ -628,14 +587,18 @@ async def _process_url(update: Update, context, url: str) -> None:
         except (asyncio.TimeoutError, Exception) as e:
             log.warning("ParseHub download failed", url=url, error=str(e))
 
-        async def _send_info_card() -> None:
+        title   = (getattr(result, "title",   "") or "").strip()
+        content = (getattr(result, "content", "") or "").strip()
+        caption = _make_caption(title, content, url)
+
+        async def _send_info_card(extra: str = "") -> None:
             thumbnail = _get_thumbnail(result)
             if thumbnail:
                 try:
                     await context.bot.send_photo(
                         chat.id,
                         photo=thumbnail,
-                        caption=caption[:1024],
+                        caption=(caption + extra)[:1024],
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
@@ -644,7 +607,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                     pass
             await context.bot.send_message(
                 chat.id,
-                text=caption[:4096],
+                text=(caption + extra)[:4096],
                 parse_mode=ParseMode.HTML,
                 reply_to_message_id=msg.message_id,
                 disable_web_page_preview=False,
@@ -654,8 +617,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             if status:
                 await status.delete()
                 status = None
-            await _send_info_card()
-            await _delete_original()
+            await _send_info_card("\n\n⚠️ <i>下载失败，请点击原链接查看</i>")
             return
 
         if status:
