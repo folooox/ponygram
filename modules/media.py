@@ -86,6 +86,7 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
 }
 
 _ph = None
+_LINK_EMOJI_ID: str | None = None  # custom emoji_id, fetched at startup
 
 
 def _is_known_url(url: str) -> bool:
@@ -122,6 +123,16 @@ async def _get_cookie(url: str) -> Optional[str]:
         if domain in url_lower:
             return await get_bot_config(key)
     return None
+
+
+async def _init_link_emoji(context) -> None:
+    global _LINK_EMOJI_ID
+    try:
+        ss = await context.bot.get_sticker_set("Milo2_by_EmojicBot")
+        _LINK_EMOJI_ID = ss.stickers[-7].custom_emoji_id
+        log.info("Link emoji loaded", emoji_id=_LINK_EMOJI_ID)
+    except Exception as e:
+        log.warning("Failed to fetch link emoji", error=str(e))
 
 
 async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
@@ -411,12 +422,16 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
+        link_icon = (
+            f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
+            if _LINK_EMOJI_ID else "🔗"
+        )
         lines2: list[str] = []
         if title:
             lines2.append(f"🎬 <b>{title[:200]}</b>")
         if content:
-            lines2.append(f"\n{content[:600]}")
-        lines2.append(f'🔗 <a href="{url}">{platform_name}</a>')
+            lines2.append(content[:600])
+        lines2.append(f'\n{link_icon} <a href="{url}">Source</a>')
         caption = "\n".join(lines2)
 
         async def _send_info_card(extra: str = "") -> None:
@@ -592,4 +607,5 @@ def setup(application: Application) -> None:
         ),
         group=20,
     )
+    application.job_queue.run_once(_init_link_emoji, when=0)
     log.info("media module loaded")
