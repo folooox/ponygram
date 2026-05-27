@@ -1,0 +1,456 @@
+{% extends "base.html" %}
+{% block title %}媒体解析 — Ponygram Admin{% endblock %}
+
+{% block content %}
+<style>
+/* ── Page-level extras ──────────────────────────────────────── */
+.plat-row td { vertical-align: middle; padding: .55rem .75rem; }
+.plat-row:hover { background: rgba(255,255,255,.025); }
+.cookie-edit-row td { padding: 0; border-top: none !important; }
+.cookie-edit-panel { background: #0d1017; border-radius: 0 0 .5rem .5rem; padding: .75rem 1rem; border: 1px solid #1e2130; border-top: none; }
+.badge-ok      { background:#16a34a22; color:#4ade80; border:1px solid #16a34a55; }
+.badge-missing { background:#64748b22; color:#94a3b8; border:1px solid #64748b55; }
+.badge-req     { background:#dc262622; color:#f87171; border:1px solid #dc262655; }
+.badge-optional{ background:#78350f22; color:#fbbf24; border:1px solid #78350f55; }
+.badge-direct  { background:#0d948822; color:#5eead4; border:1px solid #0d948855; }
+.badge-ph      { background:#2563eb22; color:#60a5fa; border:1px solid #2563eb55; }
+.sml-badge     { font-size:.68rem; padding:.22rem .5rem; border-radius:4px; white-space:nowrap; }
+.btn-icon      { padding:.25rem .45rem; font-size:.8rem; line-height:1; }
+/* JSON syntax highlight */
+.json-key   { color:#60a5fa; }
+.json-str   { color:#4ade80; }
+.json-num   { color:#fb923c; }
+.json-bool  { color:#c084fc; }
+.json-null  { color:#94a3b8; }
+/* Spinner */
+@keyframes spin { to { transform:rotate(360deg); } }
+.spin { display:inline-block; animation:spin .7s linear infinite; }
+/* Cookie textarea */
+.cookie-ta { font-size:.73rem; font-family:monospace; resize:vertical; min-height:52px; max-height:120px; }
+</style>
+
+<div class="d-flex align-items-center mb-4 gap-3">
+  <h4 class="fw-bold mb-0"><i class="bi bi-play-circle me-2"></i>媒体解析管理</h4>
+  <span class="text-secondary small">{{ platforms|length }} 个平台</span>
+</div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 解析调试器                                                   #}
+{# ═══════════════════════════════════════════════════════════ #}
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <h6 class="fw-semibold mb-0"><i class="bi bi-bug me-1 text-warning"></i>解析调试器</h6>
+      <div id="parse-status" class="small text-secondary"></div>
+    </div>
+
+    {# URL input #}
+    <div class="input-group mb-2">
+      <input id="testUrl" type="url" class="form-control form-control-sm font-monospace"
+             placeholder="粘贴任意平台链接，或点击下方平台按钮…"
+             oninput="onUrlInput(this.value)"
+             onkeydown="if(event.key==='Enter')runTest()">
+      <button class="btn btn-sm btn-primary" onclick="runTest()" id="parseBtn">
+        <i class="bi bi-play-fill me-1"></i>解析
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="clearTest()" title="清空">
+        <i class="bi bi-x-lg"></i>
+      </button>
+    </div>
+
+    {# Auto-detected platform chip #}
+    <div id="detectedChip" style="display:none" class="mb-2">
+      <span class="small text-secondary me-1">检测到：</span>
+      <span id="chipName" class="sml-badge" style="border-radius:4px"></span>
+      <span id="chipCookie" class="sml-badge ms-1" style="border-radius:4px"></span>
+      <span id="chipMode"   class="sml-badge ms-1" style="border-radius:4px"></span>
+    </div>
+
+    {# Platform quick-test buttons #}
+    <div class="d-flex flex-wrap gap-1 mb-3">
+      {% for p in platforms %}
+      <button class="btn btn-sm btn-outline-secondary"
+              id="qb-{{ p.id }}"
+              onclick="setUrl('{{ p.example_url }}')"
+              title="{{ p.domains | join(', ') }}{% if p.notes %} — {{ p.notes }}{% endif %}">
+        <i class="bi {{ p.bi_icon }} me-1" style="color:{{ p.icon_color }}"></i>{{ p.name }}
+      </button>
+      {% endfor %}
+    </div>
+
+    {# Result panel #}
+    <pre id="testResult"
+         class="p-3 rounded font-monospace"
+         style="background:#0d1017;min-height:72px;max-height:420px;overflow-y:auto;font-size:.77rem;white-space:pre-wrap;border:1px solid #1e2130;color:#c8d6e5">等待解析…</pre>
+  </div>
+</div>
+
+{# ═══════════════════════════════════════════════════════════ #}
+{# 平台列表                                                     #}
+{# ═══════════════════════════════════════════════════════════ #}
+<div class="card" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body pb-2">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+      <h6 class="fw-semibold mb-0"><i class="bi bi-grid me-1"></i>平台列表</h6>
+      <div class="d-flex gap-2 align-items-center">
+        <input type="search" class="form-control form-control-sm" style="width:160px"
+               placeholder="搜索平台…" oninput="filterPlatforms(this.value)">
+      </div>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-borderless mb-0" style="color:#c8d6e5" id="platTable">
+        <thead>
+          <tr style="border-bottom:1px solid #1e2130;font-size:.8rem;color:#64748b">
+            <th style="width:190px;padding:.4rem .75rem">平台</th>
+            <th style="padding:.4rem .75rem">域名</th>
+            <th style="width:120px;padding:.4rem .75rem">Cookie</th>
+            <th style="width:96px;padding:.4rem .75rem">解析方式</th>
+            <th style="width:88px;padding:.4rem .75rem"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in platforms %}
+          <tr class="plat-row" id="plat-row-{{ p.id }}" data-name="{{ p.name }}" data-domains="{{ p.domains | join(' ') }}">
+            <td>
+              <i class="bi {{ p.bi_icon }} me-2" style="color:{{ p.icon_color }};font-size:1rem"></i>
+              <span class="fw-semibold" style="font-size:.88rem">{{ p.name }}</span>
+            </td>
+            <td>
+              <span class="text-secondary" style="font-size:.76rem">
+                {{ p.domains | join('&nbsp;&nbsp;') }}
+              </span>
+            </td>
+            <td>
+              {% if p.cookie_key is none %}
+                <span class="sml-badge badge-missing">无需</span>
+              {% elif p.has_cookie %}
+                <span class="sml-badge badge-ok" id="cookie-badge-{{ p.id }}">✓ 已配置</span>
+              {% elif p.cookie_required %}
+                <span class="sml-badge badge-req" id="cookie-badge-{{ p.id }}">✗ 必需</span>
+              {% else %}
+                <span class="sml-badge badge-optional" id="cookie-badge-{{ p.id }}">○ 可选</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if p.parse_mode == 'direct' %}
+                <span class="sml-badge badge-direct" title="直连 B站 API，绕过 parsehub">直连</span>
+              {% else %}
+                <span class="sml-badge badge-ph">parsehub</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="d-flex gap-1">
+                <button class="btn btn-sm btn-outline-secondary btn-icon"
+                        onclick="quickTest('{{ p.example_url }}')"
+                        title="快速测试（{{ p.example_url[:40] }}…）">
+                  <i class="bi bi-play-fill"></i>
+                </button>
+                {% if p.cookie_key %}
+                <button class="btn btn-sm btn-outline-secondary btn-icon"
+                        onclick="toggleCookieEdit('{{ p.id }}')"
+                        id="key-btn-{{ p.id }}"
+                        title="配置 Cookie">
+                  <i class="bi bi-key"></i>
+                </button>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+
+          {# Cookie inline editor row #}
+          {% if p.cookie_key %}
+          <tr class="cookie-edit-row" id="cookie-row-{{ p.id }}" style="display:none">
+            <td colspan="5">
+              <div class="cookie-edit-panel">
+                <div class="d-flex align-items-center gap-2 mb-2">
+                  <span class="text-secondary small"><i class="bi bi-key me-1"></i>配置键：</span>
+                  <code class="small text-info">{{ p.cookie_key }}</code>
+                  {% if p.notes %}
+                  <span class="text-secondary small ms-2">— {{ p.notes }}</span>
+                  {% endif %}
+                </div>
+                <div class="d-flex gap-2 align-items-start">
+                  <textarea class="form-control form-control-sm cookie-ta flex-grow-1"
+                            id="cookie-val-{{ p.id }}"
+                            placeholder="粘贴 Cookie 字符串（k=v; k=v 格式）…"></textarea>
+                  <div class="d-flex flex-column gap-1">
+                    <button class="btn btn-sm btn-success"
+                            onclick="saveCookie('{{ p.id }}', '{{ p.cookie_key }}')"
+                            style="white-space:nowrap">
+                      <i class="bi bi-check-lg me-1"></i>保存
+                    </button>
+                    <button class="btn btn-sm btn-outline-danger"
+                            onclick="clearCookie('{{ p.id }}', '{{ p.cookie_key }}')"
+                            style="white-space:nowrap">
+                      <i class="bi bi-trash3 me-1"></i>清除
+                    </button>
+                    <button class="btn btn-sm btn-outline-secondary"
+                            onclick="toggleCookieEdit('{{ p.id }}')"
+                            style="white-space:nowrap">
+                      <i class="bi bi-x-lg me-1"></i>关闭
+                    </button>
+                  </div>
+                </div>
+                <div id="cookie-msg-{{ p.id }}" class="small mt-2" style="display:none"></div>
+              </div>
+            </td>
+          </tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Platform registry (mirrors Jinja context) ───────────────────
+const PLATFORMS = [
+  {% for p in platforms %}
+  {
+    id: "{{ p.id }}",
+    name: {{ p.name | tojson }},
+    icon: "{{ p.bi_icon }}",
+    color: "{{ p.icon_color }}",
+    domains: {{ p.domains | tojson }},
+    cookieKey: {{ (p.cookie_key or '') | tojson }},
+    cookieRequired: {{ 'true' if p.cookie_required else 'false' }},
+    hasCookie: {{ 'true' if p.has_cookie else 'false' }},
+    exampleUrl: {{ p.example_url | tojson }},
+    parseMode: "{{ p.parse_mode }}",
+    notes: {{ (p.notes or '') | tojson }},
+  },
+  {% endfor %}
+];
+
+const domainToPlatform = {};
+PLATFORMS.forEach(p => p.domains.forEach(d => { domainToPlatform[d] = p; }));
+
+// ── URL detection ───────────────────────────────────────────────
+function detectPlatform(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    for (const [d, p] of Object.entries(domainToPlatform)) {
+      if (host === d || host.endsWith('.' + d)) return p;
+    }
+  } catch (_) {}
+  return null;
+}
+
+function onUrlInput(val) {
+  const p = detectPlatform(val.trim());
+  const chip = document.getElementById('detectedChip');
+  if (!p) { chip.style.display = 'none'; return; }
+  chip.style.display = '';
+  const nm = document.getElementById('chipName');
+  nm.textContent = p.name;
+  nm.className = 'sml-badge';
+  nm.style.background = p.color + '22';
+  nm.style.color = '#e2e8f0';
+  nm.style.border = `1px solid ${p.color}55`;
+
+  const ck = document.getElementById('chipCookie');
+  if (!p.cookieKey) {
+    ck.textContent = '无需 Cookie';
+    ck.className = 'sml-badge badge-missing ms-1';
+  } else if (p.hasCookie) {
+    ck.textContent = 'Cookie ✓';
+    ck.className = 'sml-badge badge-ok ms-1';
+  } else if (p.cookieRequired) {
+    ck.textContent = 'Cookie ✗ 必需';
+    ck.className = 'sml-badge badge-req ms-1';
+  } else {
+    ck.textContent = 'Cookie ○ 可选';
+    ck.className = 'sml-badge badge-optional ms-1';
+  }
+
+  const md = document.getElementById('chipMode');
+  if (p.parseMode === 'direct') {
+    md.textContent = '直连';
+    md.className = 'sml-badge badge-direct ms-1';
+  } else {
+    md.textContent = 'parsehub';
+    md.className = 'sml-badge badge-ph ms-1';
+  }
+}
+
+function setUrl(url) {
+  document.getElementById('testUrl').value = url;
+  onUrlInput(url);
+  document.getElementById('testUrl').focus();
+}
+
+function quickTest(url) {
+  setUrl(url);
+  runTest();
+}
+
+function clearTest() {
+  document.getElementById('testUrl').value = '';
+  document.getElementById('detectedChip').style.display = 'none';
+  document.getElementById('testResult').innerHTML = '等待解析…';
+  document.getElementById('parse-status').textContent = '';
+}
+
+// ── JSON syntax highlighter ─────────────────────────────────────
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function highlightJson(obj) {
+  const raw = JSON.stringify(obj, null, 2);
+  return raw.replace(
+    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+    m => {
+      if (/^"/.test(m)) {
+        if (/:$/.test(m)) return `<span class="json-key">${esc(m)}</span>`;
+        return `<span class="json-str">${esc(m)}</span>`;
+      }
+      if (/true|false/.test(m)) return `<span class="json-bool">${m}</span>`;
+      if (/null/.test(m))       return `<span class="json-null">${m}</span>`;
+      return `<span class="json-num">${m}</span>`;
+    }
+  );
+}
+
+// ── Parse test ──────────────────────────────────────────────────
+async function runTest() {
+  const url = document.getElementById('testUrl').value.trim();
+  const result = document.getElementById('testResult');
+  const status = document.getElementById('parse-status');
+  const btn = document.getElementById('parseBtn');
+  if (!url) { result.textContent = '请先填入链接'; return; }
+
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise spin me-1"></i>解析中…';
+  result.textContent = '⏳ 正在请求…';
+  status.textContent = '';
+
+  const t0 = Date.now();
+  try {
+    const r = await fetch('/health/check/media', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url}),
+    });
+    const d = await r.json();
+    const ms = Date.now() - t0;
+    const ok = d.status === 'ok';
+    status.innerHTML = `<span style="color:${ok?'#4ade80':'#f87171'}">${ok?'✓ 成功':'✗ 失败'}</span> <span class="text-secondary">${ms}ms</span>`;
+    result.innerHTML = highlightJson(d);
+  } catch(e) {
+    result.textContent = '请求失败: ' + e;
+    status.textContent = '';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>解析';
+  }
+}
+
+// ── Cookie management ───────────────────────────────────────────
+const _openCookieRows = new Set();
+
+function toggleCookieEdit(id) {
+  const row = document.getElementById(`cookie-row-${id}`);
+  if (!row) return;
+  const isOpen = row.style.display !== 'none';
+  if (isOpen) {
+    row.style.display = 'none';
+    _openCookieRows.delete(id);
+  } else {
+    row.style.display = '';
+    _openCookieRows.add(id);
+    document.getElementById(`cookie-val-${id}`).focus();
+  }
+}
+
+async function saveCookie(id, key) {
+  const ta = document.getElementById(`cookie-val-${id}`);
+  const val = ta.value.trim();
+  if (!val) { showCookieMsg(id, 'warning', '未输入内容，已取消'); return; }
+  showCookieMsg(id, 'info', '保存中…');
+  try {
+    const r = await fetch('/media/cookie', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key, value: val}),
+    });
+    const d = await r.json();
+    if (d.status === 'saved') {
+      showCookieMsg(id, 'success', `✓ 已保存（${d.pairs} 对键值）`);
+      ta.value = '';
+      updateCookieBadge(id, 'ok');
+      // Update in-memory platform info
+      const p = PLATFORMS.find(p => p.id === id);
+      if (p) p.hasCookie = true;
+    } else {
+      showCookieMsg(id, 'danger', d.error || '保存失败');
+    }
+  } catch(e) {
+    showCookieMsg(id, 'danger', '网络错误: ' + e);
+  }
+}
+
+async function clearCookie(id, key) {
+  if (!confirm(`确认清除 ${key} 的 Cookie？`)) return;
+  showCookieMsg(id, 'info', '清除中…');
+  try {
+    const r = await fetch('/media/cookie', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key, value: '__CLEAR__'}),
+    });
+    const d = await r.json();
+    if (d.status === 'cleared') {
+      showCookieMsg(id, 'warning', '✓ 已清除');
+      updateCookieBadge(id, 'cleared');
+      const p = PLATFORMS.find(p => p.id === id);
+      if (p) p.hasCookie = false;
+    } else {
+      showCookieMsg(id, 'danger', d.error || '清除失败');
+    }
+  } catch(e) {
+    showCookieMsg(id, 'danger', '网络错误: ' + e);
+  }
+}
+
+function updateCookieBadge(id, state) {
+  const el = document.getElementById(`cookie-badge-${id}`);
+  if (!el) return;
+  const p = PLATFORMS.find(p => p.id === id);
+  if (state === 'ok') {
+    el.className = 'sml-badge badge-ok';
+    el.textContent = '✓ 已配置';
+  } else {
+    const req = p && p.cookieRequired;
+    el.className = `sml-badge ${req ? 'badge-req' : 'badge-optional'}`;
+    el.textContent = req ? '✗ 必需' : '○ 可选';
+  }
+}
+
+function showCookieMsg(id, type, text) {
+  const el = document.getElementById(`cookie-msg-${id}`);
+  if (!el) return;
+  const colorMap = {success:'#4ade80', warning:'#fbbf24', danger:'#f87171', info:'#60a5fa'};
+  el.style.color = colorMap[type] || '#94a3b8';
+  el.textContent = text;
+  el.style.display = '';
+  if (type === 'success' || type === 'warning') {
+    setTimeout(() => { el.style.display = 'none'; }, 4000);
+  }
+}
+
+// ── Platform search filter ──────────────────────────────────────
+function filterPlatforms(q) {
+  const sq = q.toLowerCase();
+  PLATFORMS.forEach(p => {
+    const mainRow = document.getElementById(`plat-row-${p.id}`);
+    const cookieRow = document.getElementById(`cookie-row-${p.id}`);
+    const show = !sq || p.name.toLowerCase().includes(sq) ||
+                 p.domains.some(d => d.includes(sq)) ||
+                 p.id.includes(sq);
+    if (mainRow) mainRow.style.display = show ? '' : 'none';
+    if (cookieRow && !show) { cookieRow.style.display = 'none'; _openCookieRows.delete(p.id); }
+  });
+}
+</script>
+{% endblock %}

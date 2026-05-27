@@ -102,6 +102,225 @@ def _parse_chat_ref(q: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Media platform registry (shared by /media page and /health/check/media)
+# ---------------------------------------------------------------------------
+
+_MEDIA_PLATFORMS = [
+    {
+        "id": "bilibili",
+        "name": "哔哩哔哩",
+        "bi_icon": "bi-play-btn-fill",
+        "icon_color": "#00aeec",
+        "domains": ["bilibili.com", "b23.tv", "bili2233.cn"],
+        "cookie_key": "cookie_bilibili",
+        "cookie_required": True,
+        "example_url": "https://www.bilibili.com/video/BV1GJ411x7h7",
+        "parse_mode": "direct",
+        "notes": "WARP IP 被风控，必须带 Cookie 直连 API",
+    },
+    {
+        "id": "youtube",
+        "name": "YouTube",
+        "bi_icon": "bi-youtube",
+        "icon_color": "#ff0000",
+        "domains": ["youtube.com", "youtu.be"],
+        "cookie_key": "cookie_youtube",
+        "cookie_required": False,
+        "example_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "parse_mode": "parsehub",
+        "notes": "公开视频无需 Cookie",
+    },
+    {
+        "id": "instagram",
+        "name": "Instagram",
+        "bi_icon": "bi-instagram",
+        "icon_color": "#e1306c",
+        "domains": ["instagram.com"],
+        "cookie_key": "cookie_instagram",
+        "cookie_required": True,
+        "example_url": "https://www.instagram.com/p/CUFRyFxLPCF/",
+        "parse_mode": "parsehub",
+        "notes": "需要登录 Cookie",
+    },
+    {
+        "id": "tiktok",
+        "name": "TikTok",
+        "bi_icon": "bi-tiktok",
+        "icon_color": "#69c9d0",
+        "domains": ["tiktok.com", "vm.tiktok.com"],
+        "cookie_key": "cookie_tiktok",
+        "cookie_required": False,
+        "example_url": "https://www.tiktok.com/@tiktok/video/6829267836783971589",
+        "parse_mode": "parsehub",
+        "notes": "部分私密视频需要 Cookie",
+    },
+    {
+        "id": "douyin",
+        "name": "抖音",
+        "bi_icon": "bi-music-note-beamed",
+        "icon_color": "#ff2c55",
+        "domains": ["douyin.com"],
+        "cookie_key": "cookie_douyin",
+        "cookie_required": False,
+        "example_url": "https://www.douyin.com/video/7205862202001490233",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "twitter",
+        "name": "Twitter / X",
+        "bi_icon": "bi-twitter-x",
+        "icon_color": "#e7e9ea",
+        "domains": ["twitter.com", "x.com", "t.co"],
+        "cookie_key": "cookie_twitter",
+        "cookie_required": True,
+        "example_url": "https://twitter.com/jack/status/20",
+        "parse_mode": "parsehub",
+        "notes": "需要登录 Cookie（含 auth_token）",
+    },
+    {
+        "id": "weibo",
+        "name": "微博",
+        "bi_icon": "bi-rss-fill",
+        "icon_color": "#e6162d",
+        "domains": ["weibo.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://weibo.com/tv/show/1034:5012525753786399",
+        "parse_mode": "parsehub",
+        "notes": "无需 Cookie",
+    },
+    {
+        "id": "xhs",
+        "name": "小红书",
+        "bi_icon": "bi-journal-richtext",
+        "icon_color": "#ff2442",
+        "domains": ["xiaohongshu.com", "xhslink.com"],
+        "cookie_key": "cookie_xiaohongshu",
+        "cookie_required": True,
+        "example_url": "https://www.xiaohongshu.com/explore/63b00e630000000025015e99",
+        "parse_mode": "parsehub",
+        "notes": "需要登录 Cookie",
+    },
+    {
+        "id": "kuaishou",
+        "name": "快手",
+        "bi_icon": "bi-camera-video-fill",
+        "icon_color": "#ff5000",
+        "domains": ["kuaishou.com", "ks.app"],
+        "cookie_key": "cookie_kuaishou",
+        "cookie_required": False,
+        "example_url": "https://www.kuaishou.com/short-video/3xhi3i3amuvtgek",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "facebook",
+        "name": "Facebook",
+        "bi_icon": "bi-facebook",
+        "icon_color": "#1877f2",
+        "domains": ["facebook.com", "fb.watch"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://www.facebook.com/watch?v=1234567890",
+        "parse_mode": "parsehub",
+        "notes": "无需 Cookie",
+    },
+    {
+        "id": "tieba",
+        "name": "贴吧",
+        "bi_icon": "bi-chat-dots-fill",
+        "icon_color": "#2468cc",
+        "domains": ["tieba.baidu.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://tieba.baidu.com/p/8765432109",
+        "parse_mode": "parsehub",
+        "notes": "无需 Cookie",
+    },
+    {
+        "id": "threads",
+        "name": "Threads",
+        "bi_icon": "bi-at",
+        "icon_color": "#a0a0a0",
+        "domains": ["threads.net"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://www.threads.net/@zuck/post/CuFRyFxLPCF",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "weixin",
+        "name": "微信公众号",
+        "bi_icon": "bi-wechat",
+        "icon_color": "#07c160",
+        "domains": ["mp.weixin.qq.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://mp.weixin.qq.com/s/abcdefg12345",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "xiaoheihe",
+        "name": "小黑盒",
+        "bi_icon": "bi-box-fill",
+        "icon_color": "#888888",
+        "domains": ["xiaoheihe.cn"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://xiaoheihe.cn/community/game/xxx",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "coolapk",
+        "name": "酷安",
+        "bi_icon": "bi-android2",
+        "icon_color": "#1b8e6e",
+        "domains": ["coolapk.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://www.coolapk.com/feed/12345678",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "pipix",
+        "name": "皮皮虾",
+        "bi_icon": "bi-emoji-laughing-fill",
+        "icon_color": "#ff5c00",
+        "domains": ["pipix.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://h5.pipix.com/s/abcdef",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+    {
+        "id": "zuiyou",
+        "name": "最右",
+        "bi_icon": "bi-emoji-smile-fill",
+        "icon_color": "#ff6600",
+        "domains": ["izuiyou.com"],
+        "cookie_key": None,
+        "cookie_required": False,
+        "example_url": "https://share.izuiyou.com/s/abcdef",
+        "parse_mode": "parsehub",
+        "notes": "",
+    },
+]
+
+# Derived domain→cookie_key map (used by /health/check/media)
+_MEDIA_COOKIE_MAP_GLOBAL: dict[str, str] = {}
+for _p in _MEDIA_PLATFORMS:
+    if _p["cookie_key"]:
+        for _d in _p["domains"]:
+            _MEDIA_COOKIE_MAP_GLOBAL[_d] = _p["cookie_key"]
+
+
+# ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
 
@@ -112,20 +331,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
 
     app = FastAPI(title="Ponygram Admin", docs_url=None, redoc_url=None)
 
-    # Cookie key map for media platforms (mirrors modules/media.py)
-    _MEDIA_COOKIE_MAP = {
-        "instagram.com": "cookie_instagram",
-        "twitter.com": "cookie_twitter",
-        "x.com": "cookie_twitter",
-        "bilibili.com": "cookie_bilibili",
-        "douyin.com": "cookie_douyin",
-        "tiktok.com": "cookie_tiktok",
-        "kuaishou.com": "cookie_kuaishou",
-        "xiaohongshu.com": "cookie_xiaohongshu",
-        "xhslink.com": "cookie_xiaohongshu",
-        "youtube.com": "cookie_youtube",
-        "youtu.be": "cookie_youtube",
-    }
+    _MEDIA_COOKIE_MAP = _MEDIA_COOKIE_MAP_GLOBAL
 
     # ------------------------------------------------------------------ #
     # Auth                                                                 #
@@ -795,5 +1001,43 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 await set_bot_config(key, normalized if normalized else val)
 
         return RedirectResponse(url="/settings?saved=1", status_code=303)
+
+    # ------------------------------------------------------------------ #
+    # Media management page                                                #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/media", response_class=HTMLResponse)
+    async def media_page(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        configs = await get_all_bot_configs()
+        platform_data = []
+        for p in _MEDIA_PLATFORMS:
+            has_cookie = bool(configs.get(p["cookie_key"])) if p["cookie_key"] else None
+            platform_data.append({**p, "has_cookie": has_cookie})
+        return templates.TemplateResponse(request, "media.html", {
+            "active": "media",
+            "platforms": platform_data,
+        })
+
+    @app.post("/media/cookie")
+    async def media_cookie_update(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        key = (body.get("key") or "").strip()
+        value = (body.get("value") or "").strip()
+        allowed_keys = {p["cookie_key"] for p in _MEDIA_PLATFORMS if p["cookie_key"]}
+        if key not in allowed_keys:
+            return JSONResponse({"error": "unknown key"}, status_code=400)
+        if value == "__CLEAR__":
+            await delete_bot_config(key)
+            return JSONResponse({"status": "cleared"})
+        if not value:
+            return JSONResponse({"status": "noop"})
+        normalized, count = normalize_cookie(value)
+        final = normalized if normalized else value
+        await set_bot_config(key, final)
+        return JSONResponse({"status": "saved", "pairs": count})
 
     return app
