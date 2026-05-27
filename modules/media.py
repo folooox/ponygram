@@ -229,11 +229,9 @@ _BILI_HEADERS = {
     "Referer": "https://www.bilibili.com",
     "Origin": "https://www.bilibili.com",
 }
-_BILI_DOMAINS = ("bilibili.com", "b23.tv", "bili2233.cn")
 
 
 def _bili_parse_cookie(cookie_str: str) -> dict:
-    """Parse 'k=v; k=v' cookie string into dict."""
     out = {}
     for part in cookie_str.split(";"):
         part = part.strip()
@@ -250,7 +248,7 @@ async def _bili_direct_parse(
     tmp_dir: str,
 ) -> tuple[Path, str, str]:
     """
-    Direct B站 video download using stored cookie.
+    Download a Bilibili video (BVID-based) at 720p using stored cookie.
     Returns (video_path, title, thumbnail_url). Raises on any failure.
     """
     import httpx
@@ -265,19 +263,19 @@ async def _bili_direct_parse(
         follow_redirects=True,
     ) as client:
 
-        # Resolve short links (b23.tv / bili2233.cn)
+        # Resolve short links (b23.tv)
         if any(x in url.lower() for x in ("b23.tv", "bili2233.cn")):
             resp = await client.get(url)
             url = str(resp.url)
             log.info("Bili short link resolved", final=url)
 
-        # Extract BVID
+        # Extract BVID — raises ValueError if not found (caller falls back to parsehub)
         m = re.search(r"BV[0-9A-Za-z]{10,}", url)
         if not m:
-            raise ValueError(f"Cannot extract BVID from URL: {url}")
+            raise ValueError(f"No BVID in URL: {url}")
         bvid = m.group(0)
 
-        # Step 1: video metadata (cookie 防止 412 风控)
+        # Step 1: video metadata
         r = await client.get(
             "https://api.bilibili.com/x/web-interface/view/detail",
             params={"bvid": bvid},
@@ -292,8 +290,7 @@ async def _bili_direct_parse(
         cid: int = view["cid"]
         title: str = view.get("title", "")
         pic: str = view.get("pic", "")
-        duration: int = view.get("duration", 0)
-        log.info("Bili video info ok", bvid=bvid, cid=cid, title=title[:40], duration=duration)
+        log.info("Bili video info ok", bvid=bvid, cid=cid, title=title[:40])
 
         # Step 2: buvid fingerprint
         r2 = await client.get("https://api.bilibili.com/x/frontend/finger/spi")
@@ -304,16 +301,15 @@ async def _bili_direct_parse(
             "buvid4": spi.get("b_4", ""),
         }
 
-        # Step 3: playurl (request 1080P, B站 caps to account max)
+        # Step 3: playurl at 720p (qn=64)
         r3 = await client.get(
             "https://api.bilibili.com/x/player/playurl",
             params={
                 "bvid": bvid,
                 "cid": cid,
-                "qn": 80,
+                "qn": 64,
                 "fnver": 0,
                 "fnval": 1,
-                "fourk": 1,
                 "from_client": "BROWSER",
                 "web_location": 1315873,
             },
@@ -324,8 +320,8 @@ async def _bili_direct_parse(
         durl = pdata.get("durl", [])
         if not durl:
             raise Exception(
-                f"playurl 返回空 durl: code={pjson.get('code')} msg={pjson.get('message')} "
-                f"quality={pdata.get('quality')}"
+                f"playurl 返回空 durl: code={pjson.get('code')} "
+                f"msg={pjson.get('message')} quality={pdata.get('quality')}"
             )
 
         video_url: str = durl[0].get("url") or ""
@@ -339,7 +335,7 @@ async def _bili_direct_parse(
         size_bytes = durl[0].get("size", 0)
         log.info("Bili playurl ok", bvid=bvid, quality=quality, size_mb=round(size_bytes / 1024 / 1024, 1))
 
-        # Step 4: stream download with extended timeout
+        # Step 4: stream download
         output = Path(tmp_dir) / f"{bvid}.mp4"
         dl_client = httpx.AsyncClient(
             proxy=proxy,
@@ -391,6 +387,20 @@ def _get_files(dr, skip_video_path: bool = False) -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
+def _make_caption(title: str, content: str, url: str) -> str:
+    link_icon = (
+        f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
+        if _LINK_EMOJI_ID else "🔗"
+    )
+    lines: list[str] = []
+    if title:
+        lines.append(f"🎬 <b>{title[:200]}</b>")
+    if content:
+        lines.append(content[:600])
+    lines.append(f'\n{link_icon} <a href="{url}">Source</a>')
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
@@ -404,17 +414,49 @@ async def _process_url(update: Update, context, url: str) -> None:
     tmp_dir = tempfile.mkdtemp(prefix="ponygram_")
 
     is_weixin = "mp.weixin.qq.com" in url.lower()
-    is_xhs = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
+    is_xhs    = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
+    is_bili   = any(d in url.lower() for d in ("bilibili.com", "b23.tv"))
 
     try:
         cookie = await _get_cookie(url)
-        proxy = _get_proxy()
+        proxy  = _get_proxy()
+
+        # ------------------------------------------------------------------ #
+        # Bilibili direct path (BVID + cookie required)                       #
+        # ------------------------------------------------------------------ #
+        if is_bili and cookie:
+            try:
+                await status.edit_text("⏳ 解析中… (Bilibili)")
+                await context.bot.send_chat_action(chat.id, ChatAction.UPLOAD_VIDEO)
+                video_path, bili_title, bili_thumb = await asyncio.wait_for(
+                    _bili_direct_parse(url, cookie, proxy, tmp_dir),
+                    timeout=300,
+                )
+                caption = _make_caption(bili_title, "", url)
+                await status.delete()
+                status = None
+                with open(video_path, "rb") as f:
+                    await context.bot.send_video(
+                        chat.id,
+                        video=f,
+                        caption=caption[:1024],
+                        parse_mode=ParseMode.HTML,
+                        supports_streaming=True,
+                        reply_to_message_id=msg.message_id,
+                    )
+                log.info("Bili direct sent", chat_id=chat.id)
+                return
+            except Exception as e:
+                log.warning("Bili direct parse failed, falling back to parsehub", error=str(e))
+                # Restore status for parsehub fallback
+                if status is None:
+                    status = await msg.reply_text("⏳ 解析中…")
 
         # ------------------------------------------------------------------ #
         # Generic parsehub path                                               #
         # ------------------------------------------------------------------ #
         try:
-            from parsehub.errors import DownloadError, ParseError, UnknownPlatform
+            from parsehub.errors import UnknownPlatform
             ph = _get_ph()
         except Exception as e:
             log.warning("ParseHub unavailable", error=str(e))
@@ -429,7 +471,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         except UnknownPlatform:
             await status.delete()
             return
-        except (Exception,) as e:
+        except Exception as e:
             err = str(e)
             err_type = type(e).__name__
             log.warning(
@@ -487,7 +529,6 @@ async def _process_url(update: Update, context, url: str) -> None:
                     return
                 except Exception as e:
                     log.warning("Telegraph post failed, falling through", error=str(e))
-            # fallthrough to normal flow if telegraph fails
 
         platform_name = (
             getattr(getattr(result, "platform", None), "display_name", "")
@@ -514,17 +555,7 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
-        link_icon = (
-            f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
-            if _LINK_EMOJI_ID else "🔗"
-        )
-        lines2: list[str] = []
-        if title:
-            lines2.append(f"🎬 <b>{title[:200]}</b>")
-        if content:
-            lines2.append(content[:600])
-        lines2.append(f'\n{link_icon} <a href="{url}">Source</a>')
-        caption = "\n".join(lines2)
+        caption = _make_caption(title, content, url)
 
         async def _send_info_card(extra: str = "") -> None:
             thumbnail = _get_thumbnail(result)
@@ -586,9 +617,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                             supports_streaming=True,
                         ))
                 await context.bot.send_media_group(
-                    chat.id,
-                    media=media_group,
-                    reply_to_message_id=msg.message_id,
+                    chat.id, media=media_group, reply_to_message_id=msg.message_id,
                 )
                 files_sent += len(fhs)
             finally:
