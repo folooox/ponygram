@@ -424,31 +424,39 @@ def _make_caption(
         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
         if _LINK_EMOJI_ID else "🔗"
     )
-    lines: list[str] = []
+    has_author = bool(author or author_handle)
 
-    # Author line (above title, always outside blockquote)
-    author_clean   = html.escape((author        or "").strip())
-    handle_clean   = html.escape((author_handle or "").strip())
-    if author_clean and handle_clean:
-        lines.append(f"<b>{author_clean} ({handle_clean})</b>")
-    elif author_clean:
-        lines.append(f"<b>{author_clean}</b>")
-    elif handle_clean:
-        lines.append(f"<b>{handle_clean}</b>")
-
-    # Title line — always show; fall back to "无标题"
-    lines.append(f"<b>{title[:200]}</b>" if title else "<b>无标题</b>")
-
-    # Content (tags stay inside)
-    if content:
-        if len(content) > 300:
-            lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
+    if has_author:
+        # Enhanced format: author line + bold title + blockquote content
+        lines: list[str] = []
+        author_clean = html.escape((author        or "").strip())
+        handle_clean = html.escape((author_handle or "").strip())
+        if author_clean and handle_clean:
+            lines.append(f"<b>{author_clean} ({handle_clean})</b>")
+        elif author_clean:
+            lines.append(f"<b>{author_clean}</b>")
         else:
-            lines.append(content)
+            lines.append(f"<b>{handle_clean}</b>")
 
-    # Source
-    src_label = f"<b>{html.escape(platform_name)}</b>" if platform_name else "Source"
-    lines.append(f'\n{link_icon} <a href="{url}">{src_label}</a>')
+        lines.append(f"<b>{title[:200]}</b>" if title else "<b>无标题</b>")
+
+        if content:
+            if len(content) > 300:
+                lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
+            else:
+                lines.append(content)
+
+        src = f"<b>{html.escape(platform_name)}</b>" if platform_name else "Source"
+        lines.append(f'\n{link_icon} <a href="{url}">{src}</a>')
+    else:
+        # Legacy format: plain title + content + link (no structural changes)
+        lines = []
+        if title:
+            lines.append(f"🎬 <b>{title[:200]}</b>")
+        if content:
+            lines.append(f"\n{content[:600]}")
+        src = html.escape(platform_name) if platform_name else "Source"
+        lines.append(f"{link_icon} <a href=\"{url}\">{src}</a>")
 
     return "\n".join(lines)
 
@@ -495,8 +503,6 @@ async def _process_url(update: Update, context, url: str) -> None:
                     platform_name="哔哩哩哩",
                     author=up_name or None,
                 )
-                await status.delete()
-                status = None
                 with open(video_path, "rb") as f:
                     await context.bot.send_video(
                         chat.id,
@@ -507,6 +513,9 @@ async def _process_url(update: Update, context, url: str) -> None:
                         reply_to_message_id=msg.message_id,
                     )
                 log.info("Bili direct sent", chat_id=chat.id)
+                if status:
+                    await status.delete()
+                    status = None
                 await _delete_original()
                 return
             except Exception as e:
@@ -580,14 +589,15 @@ async def _process_url(update: Update, context, url: str) -> None:
                         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
                         if _LINK_EMOJI_ID else "🔗"
                     )
-                    await status.delete()
-                    status = None
                     await context.bot.send_message(
                         chat.id,
                         text=f"<b>{html.escape(art_title)}</b>\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
+                    if status:
+                        await status.delete()
+                        status = None
                     await _delete_original()
                     return
                 except Exception as e:
@@ -651,16 +661,12 @@ async def _process_url(update: Update, context, url: str) -> None:
             )
 
         if not files:
+            await _send_info_card()
             if status:
                 await status.delete()
                 status = None
-            await _send_info_card()
             await _delete_original()
             return
-
-        if status:
-            await status.delete()
-            status = None
 
         await context.bot.send_chat_action(chat.id, chat_action)
 
@@ -735,6 +741,9 @@ async def _process_url(update: Update, context, url: str) -> None:
             files_sent += 1
 
         log.info("Media sent", platform=platform_name, chat_id=chat.id, files=files_sent)
+        if status:
+            await status.delete()
+            status = None
         await _delete_original()
 
     except TelegramError as e:
