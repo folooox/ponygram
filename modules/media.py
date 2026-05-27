@@ -86,7 +86,6 @@ _DOMAIN_COOKIE_KEY: dict[str, str] = {
     "youtu.be":        "cookie_youtube",
 }
 
-_ph = None
 _LINK_EMOJI_ID: str | None = None
 _TELEGRAPH_TOKEN: str | None = None
 
@@ -102,14 +101,6 @@ def _is_known_url(url: str) -> bool:
 def _is_auth_error(msg: str) -> bool:
     m = msg.lower()
     return any(p in m for p in _AUTH_REQUIRED_PHRASES)
-
-
-def _get_ph():
-    global _ph
-    if _ph is None:
-        from parsehub import ParseHub
-        _ph = ParseHub()
-    return _ph
 
 
 def _get_proxy() -> Optional[str]:
@@ -507,8 +498,9 @@ async def _process_url(update: Update, context, url: str) -> None:
         # Generic parsehub path                                               #
         # ------------------------------------------------------------------ #
         try:
+            from parsehub import ParseHub
             from parsehub.errors import UnknownPlatform
-            ph = _get_ph()
+            ph = ParseHub()
         except Exception as e:
             log.warning("ParseHub unavailable", error=str(e))
             await status.delete()
