@@ -40,7 +40,7 @@
     }
     #topbar .hamburger:active { background: #1e2130; }
 
-    /* ── Sidebar ─────────────────────────────────────────── */
+    /* ── Sidebar ───────────────────────────────────────────── */
     #sidebar {
       width: var(--sidebar-w);
       min-height: 100vh;
@@ -87,7 +87,7 @@
     #sidebar .nav-link i { width: 1.2em; }
     #sidebar .logout-link { color: #64748b !important; }
 
-    /* ── Backdrop ────────────────────────────────────────── */
+    /* ── Backdrop ──────────────────────────────────────────── */
     #sidebar-backdrop {
       display: none;
       position: fixed;
@@ -97,11 +97,11 @@
       z-index: 240;
     }
 
-    /* ── Main content ────────────────────────────────────── */
+    /* ── Main content ────────────────────────────────────────── */
     #main { margin-left: var(--sidebar-w); padding: 2rem; }
     .stat-card { border: none; border-radius: .75rem; }
 
-    /* ── Mobile breakpoint ───────────────────────────────── */
+    /* ── Mobile breakpoint ─────────────────────────────────────── */
     @media (max-width: 768px) {
       #topbar { display: flex; }
       #sidebar {
@@ -119,16 +119,16 @@
       h4.fw-bold { font-size: 1.25rem; }
     }
 
-    /* ── Even tighter on very small phones ───────────────── */
+    /* ── Even tighter on very small phones ──────────────────────── */
     @media (max-width: 380px) {
       #main { padding: calc(var(--topbar-h) + .75rem) .65rem 1rem; }
       .card .card-body { padding: .85rem; }
     }
 
-    /* ── Make tables horizontally scrollable smoothly ────── */
+    /* ── Make tables horizontally scrollable smoothly ─────────────── */
     .table-responsive { -webkit-overflow-scrolling: touch; }
 
-    /* ── Larger tap targets on touch devices ─────────────── */
+    /* ── Larger tap targets on touch devices ───────────────────── */
     @media (hover: none) {
       .btn-sm { padding: .35rem .65rem; }
       .form-check-input { transform: scale(1.1); }
@@ -177,6 +177,11 @@
     <li class="nav-item">
       <a class="nav-link {% if active == 'media' %}active{% endif %}" href="/media">
         <i class="bi bi-play-circle"></i> Media
+      </a>
+    </li>
+    <li class="nav-item">
+      <a class="nav-link {% if active == 'psn_library' %}active{% endif %}" href="/psn-library">
+        <i class="bi bi-controller"></i> PS Library
       </a>
     </li>
     <li class="nav-item">

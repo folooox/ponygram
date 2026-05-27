@@ -4,7 +4,7 @@ Commands (private chat + active groups):
   /psn [psn_id]          — PSN user profile (trophy level, platinum count, recent games)
   /psprice <title>       — PS Store price via PSPrices.com (HK + US)
   /trophy <psn_id> <game>— Trophy progress for a specific game
-  /game <title>          — RAWG.io PS4/PS5 game search + PSN HK price
+  /game <title>          — RAWG.io PS4/PS5 game search + PSN HK price + local PS Plus status
 
 API keys stored in BotConfig:
   rawg_api_key  — RAWG.io free API key (rawg.io/apidocs)
@@ -28,7 +28,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler
 
 from bot.cache import TTLCache
-from bot.database import get_bot_config, get_group_settings, set_bot_config
+from bot.database import get_bot_config, get_group_settings, search_psn_games, set_bot_config
 from bot.logger import get_logger
 from bot.router import registry
 
@@ -382,6 +382,30 @@ async def _translate_game_name(query: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# Local PS Plus library lookup
+# ---------------------------------------------------------------------------
+
+def _format_psplus_status(local_games) -> str:
+    """Format PS Plus status lines from local DB results."""
+    if not local_games:
+        return ""
+    lines = ["\n\n📚 <b>PS Plus 状态（本地库）：</b>"]
+    tier_names = {1: "Essential（会免）", 2: "Extra", 3: "Premium"}
+    for lg in local_games:
+        tier_label = tier_names.get(lg.tier, f"Tier {lg.tier}")
+        entry_str = lg.entry_date.strftime("%Y-%m-%d") if lg.entry_date else "?"
+        exit_str = lg.exit_date.strftime("%Y-%m-%d") if lg.exit_date else None
+        platforms_str = f" ({lg.platforms})" if lg.platforms else ""
+        if lg.tier == 1:
+            date_range = f"{entry_str} ~ {exit_str}" if exit_str else entry_str
+            lines.append(f"  🄓 {tier_label}：{date_range}")
+        else:
+            status_icon = "✅" if lg.status == "active" else "❌已出库"
+            lines.append(f"  🎮 {tier_label}{platforms_str}：{entry_str} 入库 {status_icon}")
+    return "".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Active-group guard
 # ---------------------------------------------------------------------------
 
@@ -562,7 +586,7 @@ async def cmd_trophy(update: Update, context) -> None:
 
 
 async def cmd_game(update: Update, context) -> None:
-    """/game <title> — 用 RAWG.io 搜索 PS4/PS5 游戏信息，附带 PSN HK 价格"""
+    """/game <title> — 用 RAWG.io 搜索 PS4/PS5 游戏信息，附带 PSN HK 价格 + PS Plus 本地库状态"""
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat:
@@ -611,16 +635,25 @@ async def cmd_game(update: Update, context) -> None:
 
         await status.edit_text("⏳ 正在查询价格…")
 
-        # Step 3: fetch price
-        price_res = None
-        try:
-            price_res = await asyncio.wait_for(search_psprices(query), timeout=12)
-        except Exception:
-            pass
+        # Step 3: fetch price and local PS Plus status concurrently
+        price_task = asyncio.ensure_future(
+            asyncio.wait_for(search_psprices(query), timeout=12)
+        )
+        psplus_task = asyncio.ensure_future(
+            search_psn_games(items[0].get("name", query))
+        )
+        price_res, local_games = await asyncio.gather(
+            price_task, psplus_task, return_exceptions=True
+        )
+        if isinstance(price_res, Exception):
+            price_res = None
+        if isinstance(local_games, Exception):
+            local_games = []
 
         game_text = _format_game(items[0])
         if isinstance(price_res, list) and price_res:
             game_text += "\n\n" + _format_price(price_res, items[0].get("name", query))
+        game_text += _format_psplus_status(local_games)
 
         await status.edit_text(game_text, parse_mode=ParseMode.HTML)
 

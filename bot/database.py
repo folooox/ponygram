@@ -3,12 +3,13 @@ Async database layer — SQLite via SQLAlchemy 2 + aiosqlite.
 
 Tables
 ------
-users           — every user seen by the bot
-group_settings  — per-group configuration (welcome text, verification, etc.)
-blacklist       — banned user IDs (global)
-rss_feeds       — per-chat RSS subscriptions
-rss_sent        — deduplication log of pushed entries
-bot_config      — key-value store for bot-level settings (API keys, etc.)
+users               — every user seen by the bot
+group_settings      — per-group configuration (welcome text, verification, etc.)
+blacklist           — banned user IDs (global)
+rss_feeds           — per-chat RSS subscriptions
+rss_sent            — deduplication log of pushed entries
+bot_config          — key-value store for bot-level settings (API keys, etc.)
+psn_library_games   — PS Plus game library (tier 1=Essential, 2=Extra, 3=Premium)
 """
 
 from __future__ import annotations
@@ -21,10 +22,13 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     Column,
+    Date,
     DateTime,
     Integer,
     String,
     Text,
+    func,
+    or_,
     select,
     delete,
 )
@@ -135,6 +139,31 @@ class PlatformCredential(Base):
     password_enc = Column(Text, nullable=False)        # Fernet-encrypted with bot token
     last_refresh_at = Column(DateTime, nullable=True)
     last_refresh_ok = Column(Boolean, nullable=True)   # None=never tried
+
+
+class PsnLibraryGame(Base):
+    """PS Plus games: tier=1 Essential(会免), tier=2 Extra, tier=3 Premium."""
+    __tablename__ = "psn_library_games"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    title_en     = Column(Text, nullable=False)
+    title_zh     = Column(Text, nullable=True)
+    concept_id   = Column(BigInteger, nullable=True, index=True)
+    product_id   = Column(Text, nullable=True)
+    store_url    = Column(Text, nullable=True)
+    cover_url    = Column(Text, nullable=True)
+    release_date = Column(Date, nullable=True)
+    entry_date   = Column(Date, nullable=False)
+    exit_date    = Column(Date, nullable=True)
+    tier         = Column(Integer, nullable=False, index=True)  # 1=Essential 2=Extra 3=Premium
+    status       = Column(String(16), default="active")         # active / removed
+    platforms    = Column(Text, nullable=True)                   # "PS4,PS5"
+    genre        = Column(Text, nullable=True)
+    age_rating   = Column(Text, nullable=True)
+    streaming    = Column(Boolean, default=False)
+    region       = Column(String(8), default="HK")
+    note         = Column(Text, nullable=True)
+    created_at   = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -497,3 +526,185 @@ async def update_credential_refresh(platform: str, ok: bool) -> None:
             row.last_refresh_at = datetime.utcnow()
             row.last_refresh_ok = ok
             await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# PsnLibraryGame helpers
+# ---------------------------------------------------------------------------
+
+async def get_psn_library_games(
+    tier: Optional[int] = None,
+    status: Optional[str] = None,
+    region: str = "HK",
+    keyword: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> List[PsnLibraryGame]:
+    async with get_session() as s:
+        q = select(PsnLibraryGame).where(PsnLibraryGame.region == region)
+        if tier is not None:
+            q = q.where(PsnLibraryGame.tier == tier)
+        if status is not None:
+            q = q.where(PsnLibraryGame.status == status)
+        if keyword:
+            kw = f"%{keyword}%"
+            q = q.where(or_(
+                PsnLibraryGame.title_en.ilike(kw),
+                PsnLibraryGame.title_zh.ilike(kw),
+            ))
+        q = q.order_by(PsnLibraryGame.entry_date.desc()).limit(limit).offset(offset)
+        result = await s.execute(q)
+        return list(result.scalars().all())
+
+
+async def count_psn_library_games(
+    tier: Optional[int] = None,
+    status: Optional[str] = None,
+    region: str = "HK",
+    keyword: Optional[str] = None,
+) -> int:
+    async with get_session() as s:
+        q = select(func.count()).select_from(PsnLibraryGame).where(PsnLibraryGame.region == region)
+        if tier is not None:
+            q = q.where(PsnLibraryGame.tier == tier)
+        if status is not None:
+            q = q.where(PsnLibraryGame.status == status)
+        if keyword:
+            kw = f"%{keyword}%"
+            q = q.where(or_(
+                PsnLibraryGame.title_en.ilike(kw),
+                PsnLibraryGame.title_zh.ilike(kw),
+            ))
+        return (await s.execute(q)).scalar_one()
+
+
+async def get_psn_game_by_concept(concept_id: int) -> Optional[PsnLibraryGame]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(PsnLibraryGame).where(PsnLibraryGame.concept_id == concept_id)
+        )
+        return result.scalars().first()
+
+
+async def get_psn_game_by_id(game_id: int) -> Optional[PsnLibraryGame]:
+    async with get_session() as s:
+        return await s.get(PsnLibraryGame, game_id)
+
+
+async def search_psn_games(keyword: str) -> List[PsnLibraryGame]:
+    """Search by title_en or title_zh; returns up to 5 matches ordered by tier."""
+    kw = f"%{keyword}%"
+    async with get_session() as s:
+        result = await s.execute(
+            select(PsnLibraryGame)
+            .where(or_(
+                PsnLibraryGame.title_en.ilike(kw),
+                PsnLibraryGame.title_zh.ilike(kw),
+            ))
+            .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
+            .limit(5)
+        )
+        return list(result.scalars().all())
+
+
+async def upsert_psn_game(
+    title_en: str,
+    entry_date,
+    tier: int,
+    *,
+    game_id: Optional[int] = None,
+    title_zh: Optional[str] = None,
+    concept_id: Optional[int] = None,
+    product_id: Optional[str] = None,
+    store_url: Optional[str] = None,
+    cover_url: Optional[str] = None,
+    release_date=None,
+    exit_date=None,
+    status: str = "active",
+    platforms: Optional[str] = None,
+    genre: Optional[str] = None,
+    age_rating: Optional[str] = None,
+    streaming: bool = False,
+    region: str = "HK",
+    note: Optional[str] = None,
+) -> PsnLibraryGame:
+    async with get_session() as s:
+        row: Optional[PsnLibraryGame] = None
+        if game_id:
+            row = await s.get(PsnLibraryGame, game_id)
+        if not row:
+            row = PsnLibraryGame()
+            s.add(row)
+        row.title_en = title_en
+        row.title_zh = title_zh
+        row.concept_id = concept_id
+        row.product_id = product_id
+        row.store_url = store_url
+        row.cover_url = cover_url
+        row.release_date = release_date
+        row.entry_date = entry_date
+        row.exit_date = exit_date
+        row.tier = tier
+        row.status = status
+        row.platforms = platforms
+        row.genre = genre
+        row.age_rating = age_rating
+        row.streaming = streaming
+        row.region = region
+        row.note = note
+        await s.commit()
+        await s.refresh(row)
+        return row
+
+
+async def delete_psn_game(game_id: int) -> bool:
+    async with get_session() as s:
+        row = await s.get(PsnLibraryGame, game_id)
+        if not row:
+            return False
+        await s.delete(row)
+        await s.commit()
+        return True
+
+
+async def bulk_import_psn_games(rows: List[dict]) -> tuple[int, int]:
+    """Import games from parsed CSV rows. Returns (success_count, error_count)."""
+    from datetime import date as _date
+    ok = 0
+    err = 0
+    for row in rows:
+        try:
+            def _d(k: str):
+                v = (row.get(k) or "").strip()
+                return _date.fromisoformat(v) if v else None
+
+            concept_id = int(row["concept_id"]) if (row.get("concept_id") or "").strip() else None
+            tier = int((row.get("tier") or "2").strip())
+            entry_date = _d("entry_date") or _date.today()
+
+            platforms_raw = (row.get("platforms") or "").strip()
+            platforms = platforms_raw if platforms_raw else None
+
+            await upsert_psn_game(
+                title_en=(row.get("title_en") or "").strip(),
+                entry_date=entry_date,
+                tier=tier,
+                title_zh=(row.get("title_zh") or "").strip() or None,
+                concept_id=concept_id,
+                product_id=(row.get("product_id") or "").strip() or None,
+                store_url=(row.get("store_url") or "").strip() or None,
+                cover_url=(row.get("cover_url") or "").strip() or None,
+                release_date=_d("release_date"),
+                exit_date=_d("exit_date"),
+                status=(row.get("status") or "active").strip() or "active",
+                platforms=platforms,
+                genre=(row.get("genre") or "").strip() or None,
+                age_rating=(row.get("age_rating") or "").strip() or None,
+                streaming=(row.get("streaming") or "").strip().lower() in ("1", "true", "yes"),
+                region=(row.get("region") or "HK").strip() or "HK",
+                note=(row.get("note") or "").strip() or None,
+            )
+            ok += 1
+        except Exception:
+            err += 1
+    return ok, err

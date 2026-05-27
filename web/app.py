@@ -11,6 +11,7 @@ Start via main.py when WEB_ENABLED=true.  Provides:
   /health     — JSON service health (used by dashboard JS)
   /health/check/{service} — live-test a specific service
   /health/check/media     — live-test media URL parsing via ParseHub
+  /psn-library — PS Plus game library management (CRUD + bulk import)
   /login      — password form (WEB_SECRET from .env)
   /logout     — clear session
 """
@@ -18,11 +19,14 @@ Start via main.py when WEB_ENABLED=true.  Provides:
 from __future__ import annotations
 
 import asyncio
+import csv
 import hashlib
+import io
 import os
 import secrets
+from datetime import date as _date
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import aiohttp
 from fastapi import Cookie, FastAPI, Form, Request, Response
@@ -32,22 +36,29 @@ from fastapi.templating import Jinja2Templates
 from bot.database import (
     Blacklist,
     GroupSettings,
+    PsnLibraryGame,
     RssFeed,
     User,
     UserWarn,
     add_rss_feed,
     add_to_blacklist,
+    bulk_import_psn_games,
+    count_psn_library_games,
     delete_bot_config,
+    delete_psn_game,
     get_all_bot_configs,
     get_all_rss_feeds,
     get_bot_config,
     get_group_settings,
+    get_psn_game_by_id,
+    get_psn_library_games,
     get_session,
     remove_from_blacklist,
     remove_rss_feed,
     set_bot_config,
     set_feed_paused,
     set_group_field,
+    upsert_psn_game,
 )
 from bot.utils import normalize_cookie
 from sqlalchemy import func, select
@@ -99,6 +110,60 @@ def _parse_chat_ref(q: str) -> Optional[str]:
     if q.startswith("@"):
         return q
     return None
+
+
+# ---------------------------------------------------------------------------
+# PSN Library helpers
+# ---------------------------------------------------------------------------
+
+async def _psn_lib_save_form(game_id: Optional[int], form) -> None:
+    def _d(key: str):
+        val = (form.get(key) or "").strip()
+        return _date.fromisoformat(val) if val else None
+
+    def _i(key: str) -> Optional[int]:
+        val = (form.get(key) or "").strip()
+        return int(val) if val else None
+
+    platforms_parts = []
+    if form.get("platform_ps4"):
+        platforms_parts.append("PS4")
+    if form.get("platform_ps5"):
+        platforms_parts.append("PS5")
+
+    await upsert_psn_game(
+        title_en=(form.get("title_en") or "").strip(),
+        entry_date=_d("entry_date") or _date.today(),
+        tier=int(form.get("tier") or 2),
+        game_id=game_id,
+        title_zh=(form.get("title_zh") or "").strip() or None,
+        concept_id=_i("concept_id"),
+        product_id=(form.get("product_id") or "").strip() or None,
+        store_url=(form.get("store_url") or "").strip() or None,
+        cover_url=(form.get("cover_url") or "").strip() or None,
+        release_date=_d("release_date"),
+        exit_date=_d("exit_date"),
+        status=(form.get("status") or "active").strip(),
+        platforms=",".join(platforms_parts) if platforms_parts else None,
+        genre=(form.get("genre") or "").strip() or None,
+        age_rating=(form.get("age_rating") or "").strip() or None,
+        streaming=bool(form.get("streaming")),
+        region=(form.get("region") or "HK").strip() or "HK",
+        note=(form.get("note") or "").strip() or None,
+    )
+
+
+def _parse_psn_csv(csv_text: str) -> List[dict]:
+    """Parse CSV text into list of dicts; normalise pipe-separated platforms."""
+    rows = []
+    reader = csv.DictReader(io.StringIO(csv_text.strip()))
+    for row in reader:
+        cleaned = {k.strip(): v.strip() for k, v in row.items()}
+        # Accept both | and , as platform separator
+        if "platforms" in cleaned:
+            cleaned["platforms"] = cleaned["platforms"].replace("|", ",")
+        rows.append(cleaned)
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -976,5 +1041,75 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         final = normalized if normalized else value
         await set_bot_config(key, final)
         return JSONResponse({"status": "saved", "pairs": count})
+
+    # ------------------------------------------------------------------ #
+    # PS Library                                                           #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/psn-library", response_class=HTMLResponse)
+    async def psn_library_page(
+        request: Request,
+        tier: Optional[int] = None,
+        status: Optional[str] = None,
+        q: Optional[str] = None,
+        page: int = 1,
+        msg: str = "",
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        per_page = 50
+        offset = (page - 1) * per_page
+        games = await get_psn_library_games(
+            tier=tier, status=status, keyword=q, limit=per_page, offset=offset
+        )
+        total = await count_psn_library_games(tier=tier, status=status, keyword=q)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        return templates.TemplateResponse(request, "psn_library.html", {
+            "active": "psn_library",
+            "games": games,
+            "total": total,
+            "page": page,
+            "total_pages": total_pages,
+            "filter_tier": tier,
+            "filter_status": status,
+            "filter_q": q or "",
+            "msg": msg,
+        })
+
+    @app.post("/psn-library/add")
+    async def psn_library_add(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        form = await request.form()
+        await _psn_lib_save_form(None, form)
+        return RedirectResponse(url="/psn-library?msg=added", status_code=303)
+
+    @app.post("/psn-library/{game_id}/edit")
+    async def psn_library_edit(game_id: int, request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        form = await request.form()
+        await _psn_lib_save_form(game_id, form)
+        return RedirectResponse(url="/psn-library?msg=saved", status_code=303)
+
+    @app.post("/psn-library/{game_id}/delete")
+    async def psn_library_delete(game_id: int, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        await delete_psn_game(game_id)
+        return RedirectResponse(url="/psn-library?msg=deleted", status_code=303)
+
+    @app.post("/psn-library/bulk")
+    async def psn_library_bulk(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        csv_text = body.get("csv", "")
+        rows = _parse_psn_csv(csv_text)
+        if not rows:
+            return JSONResponse({"ok": 0, "err": 0})
+        ok, err = await bulk_import_psn_games(rows)
+        return JSONResponse({"ok": ok, "err": err})
 
     return app
