@@ -90,6 +90,9 @@ _ph = None
 _LINK_EMOJI_ID: str | None = None
 _TELEGRAPH_TOKEN: str | None = None
 
+# Inline markdown pattern: **bold**, *italic*, _italic_, `code`
+_INLINE_MD = re.compile(r"\*\*(.+?)\*\*|\*(.+?)\*|_(.+?)_|`(.+?)`", re.DOTALL)
+
 
 def _is_known_url(url: str) -> bool:
     url_lower = url.lower()
@@ -161,6 +164,27 @@ async def _ensure_telegraph_token() -> str | None:
     return token
 
 
+def _parse_inline_md(text: str) -> list:
+    """Convert inline markdown in text to Telegraph children node list."""
+    children: list = []
+    last = 0
+    for m in _INLINE_MD.finditer(text):
+        if m.start() > last:
+            children.append(text[last:m.start()])
+        if m.group(1) is not None:          # **bold**
+            children.append({"tag": "b", "children": [m.group(1)]})
+        elif m.group(2) is not None:        # *italic*
+            children.append({"tag": "i", "children": [m.group(2)]})
+        elif m.group(3) is not None:        # _italic_
+            children.append({"tag": "i", "children": [m.group(3)]})
+        else:                               # `code`
+            children.append({"tag": "code", "children": [m.group(4)]})
+        last = m.end()
+    if last < len(text):
+        children.append(text[last:])
+    return children or [text]
+
+
 def _md_to_telegraph_nodes(md: str) -> list:
     nodes = []
     for line in md.split("\n"):
@@ -168,15 +192,15 @@ def _md_to_telegraph_nodes(md: str) -> list:
         if not line:
             continue
         if line.startswith("# "):
-            nodes.append({"tag": "h3", "children": [line[2:]]})
+            nodes.append({"tag": "h3", "children": _parse_inline_md(line[2:])})
         elif line.startswith(("## ", "### ")):
-            nodes.append({"tag": "h4", "children": [line.lstrip("#").strip()]})
+            nodes.append({"tag": "h4", "children": _parse_inline_md(line.lstrip("#").strip())})
         elif m := re.match(r"!\[.*?\]\((https?://\S+)\)", line):
             nodes.append({"tag": "figure", "children": [
                 {"tag": "img", "attrs": {"src": m.group(1)}}
             ]})
         else:
-            nodes.append({"tag": "p", "children": [line]})
+            nodes.append({"tag": "p", "children": _parse_inline_md(line)})
     return nodes or [{"tag": "p", "children": [" "]}]
 
 
@@ -394,9 +418,12 @@ def _make_caption(title: str, content: str, url: str) -> str:
     )
     lines: list[str] = []
     if title:
-        lines.append(f"🎬 <b>{title[:200]}</b>")
+        lines.append(f"<b>{title[:200]}</b>")
     if content:
-        lines.append(content[:600])
+        if len(content) > 300:
+            lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
+        else:
+            lines.append(content)
     lines.append(f'\n{link_icon} <a href="{url}">Source</a>')
     return "\n".join(lines)
 
@@ -416,6 +443,12 @@ async def _process_url(update: Update, context, url: str) -> None:
     is_weixin = "mp.weixin.qq.com" in url.lower()
     is_xhs    = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
     is_bili   = any(d in url.lower() for d in ("bilibili.com", "b23.tv"))
+
+    async def _delete_original() -> None:
+        try:
+            await msg.delete()
+        except TelegramError:
+            pass
 
     try:
         cookie = await _get_cookie(url)
@@ -445,10 +478,10 @@ async def _process_url(update: Update, context, url: str) -> None:
                         reply_to_message_id=msg.message_id,
                     )
                 log.info("Bili direct sent", chat_id=chat.id)
+                await _delete_original()
                 return
             except Exception as e:
                 log.warning("Bili direct parse failed, falling back to parsehub", error=str(e))
-                # Restore status for parsehub fallback
                 if status is None:
                     status = await msg.reply_text("⏳ 解析中…")
 
@@ -526,6 +559,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
+                    await _delete_original()
                     return
                 except Exception as e:
                     log.warning("Telegraph post failed, falling through", error=str(e))
@@ -663,6 +697,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             files_sent += 1
 
         log.info("Media sent", platform=platform_name, chat_id=chat.id, files=files_sent)
+        await _delete_original()
 
     except TelegramError as e:
         log.warning("Media send failed", error=str(e))
