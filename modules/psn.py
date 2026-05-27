@@ -15,6 +15,7 @@ API keys stored in BotConfig:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import html
 import json
 import re
@@ -23,9 +24,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote as urlquote
 
 import aiohttp
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import TTLCache
 from bot.database import get_bot_config, get_group_settings, search_psn_games, set_bot_config
@@ -116,6 +117,54 @@ def _format_game(item: Dict) -> str:
         lines.append(f"🏷 {html.escape(genres)}")
     lines.append(f'\n🔗 <a href="{store_url}">PS Store</a>')
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Game navigation helpers
+# ---------------------------------------------------------------------------
+
+def _game_keyboard(items: list, current_idx: int, cache_key: str) -> Optional[InlineKeyboardMarkup]:
+    """Row of buttons for switching between game results (excludes current)."""
+    buttons = []
+    for i, g in enumerate(items[:5]):
+        if i == current_idx:
+            continue
+        name = g.get("name", "?")[:22]
+        released = (g.get("released") or "")[:4]
+        label = f"{i+1}. {name}（{released}）" if released else f"{i+1}. {name}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"game:{cache_key}:{i}"))
+        if len(buttons) >= 3:
+            break
+    return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
+async def on_game_button(update: Update, context) -> None:
+    """Handle alternative game selection from navigation buttons."""
+    q = update.callback_query
+    assert q
+    await q.answer()
+
+    _, cache_key, idx_str = q.data.split(":", 2)
+    idx = int(idx_str)
+
+    items = await game_cache.get(cache_key)
+    if not items or idx >= len(items):
+        await q.edit_message_text("结果已过期，请重新搜索。")
+        return
+
+    item = items[idx]
+    local_games = await search_psn_games(item.get("name", ""))
+    text = _format_game(item) + _format_psplus_status(local_games)
+    keyboard = _game_keyboard(items, idx, cache_key)
+
+    if q.message and q.message.photo:
+        try:
+            await q.edit_message_caption(text[:1024], parse_mode=ParseMode.HTML,
+                                         reply_markup=keyboard)
+            return
+        except Exception:
+            pass
+    await q.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +661,7 @@ async def cmd_game(update: Update, context) -> None:
         return
 
     status = await msg.reply_text(f"⏳ 正在搜索 {html.escape(query)}…")
+    status_alive = True
     try:
         # Step 1: search RAWG
         items = await asyncio.wait_for(search_games(query), timeout=10)
@@ -635,6 +685,10 @@ async def cmd_game(update: Update, context) -> None:
 
         await status.edit_text("⏳ 正在查询价格…")
 
+        # Cache all results under a short key for callback navigation
+        short_key = hashlib.md5(f"game:{query.lower()}".encode()).hexdigest()[:16]
+        await game_cache.set(short_key, items)
+
         # Step 3: fetch price and local PS Plus status concurrently
         price_task = asyncio.ensure_future(
             asyncio.wait_for(search_psprices(query), timeout=12)
@@ -655,16 +709,30 @@ async def cmd_game(update: Update, context) -> None:
             game_text += "\n\n" + _format_price(price_res, items[0].get("name", query))
         game_text += _format_psplus_status(local_games)
 
-        await status.edit_text(game_text, parse_mode=ParseMode.HTML)
+        keyboard = _game_keyboard(items, 0, short_key)
+        cover = items[0].get("background_image")
+
+        await status.delete()
+        status_alive = False
+        if cover:
+            try:
+                await msg.reply_photo(cover, caption=game_text[:1024],
+                                      parse_mode=ParseMode.HTML, reply_markup=keyboard)
+                return
+            except Exception:
+                pass
+        await msg.reply_text(game_text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
     except asyncio.TimeoutError:
-        await status.edit_text("❌ 查询超时，请稍后再试。")
+        if status_alive:
+            await status.edit_text("❌ 查询超时，请稍后再试。")
     except Exception as e:
         log.warning("Game query failed", error=str(e))
-        await status.edit_text(
-            f"❌ 查询失败：<code>{html.escape(str(e)[:200])}</code>",
-            parse_mode=ParseMode.HTML,
-        )
+        if status_alive:
+            await status.edit_text(
+                f"❌ 查询失败：<code>{html.escape(str(e)[:200])}</code>",
+                parse_mode=ParseMode.HTML,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -681,4 +749,5 @@ def setup(application: Application) -> None:
     for name, handler, desc, admin in cmds:
         registry.register_command(name, handler, desc, admin_only=admin)
         application.add_handler(CommandHandler(name, handler))
+    application.add_handler(CallbackQueryHandler(on_game_button, pattern=r"^game:"))
     log.info("psn module loaded")

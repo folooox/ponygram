@@ -1,15 +1,18 @@
 """
 Book search module — powered by Google Books API.
 
-Accessible via Telegram inline mode: @bot book <query>
-No API key required for basic usage (up to 1000 req/day per IP).
+Accessible via:
+  @bot book <query>  — inline picker (up to 5 results with thumbnails)
+  /book <query>      — direct command (cover art + navigation buttons)
+
+No API key required (up to 1000 req/day per IP).
 Results cached 1 hour per query.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,6 +21,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import book_cache
 from bot.logger import get_logger
+from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -25,10 +29,11 @@ _GBOOKS_BASE = "https://www.googleapis.com/books/v1/volumes"
 
 
 async def _gbooks_search(query: str, max_results: int = 5) -> Optional[List[Dict]]:
-    params = {"q": query, "maxResults": max_results, "printType": "books", "langRestrict": ""}
+    params = {"q": query, "maxResults": max_results, "printType": "books"}
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(_GBOOKS_BASE, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with session.get(_GBOOKS_BASE, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
                     return None
                 data = await r.json()
@@ -36,6 +41,19 @@ async def _gbooks_search(query: str, max_results: int = 5) -> Optional[List[Dict
     except Exception as e:
         log.warning("Google Books request failed", error=str(e))
         return None
+
+
+def get_cover_url(item: Dict) -> Optional[str]:
+    """Return an HTTPS cover image URL, or None."""
+    links = item.get("volumeInfo", {}).get("imageLinks", {})
+    url = links.get("thumbnail") or links.get("smallThumbnail")
+    if not url:
+        return None
+    # Google Books returns HTTP; Telegram/PTB needs HTTPS
+    url = url.replace("http://", "https://")
+    # zoom=1 is tiny; zoom=0 is front-cover size
+    url = url.replace("zoom=1", "zoom=0")
+    return url
 
 
 def _format_book(item: Dict) -> str:
@@ -48,7 +66,7 @@ def _format_book(item: Dict) -> str:
     pages = info.get("pageCount")
     rating = info.get("averageRating")
     ratings_count = info.get("ratingsCount", 0)
-    description = info.get("description", "No description available.")
+    description = (info.get("description") or "No description available.")
     if len(description) > 300:
         description = description[:300].rstrip() + "…"
     categories = ", ".join(info.get("categories", []))
@@ -84,8 +102,24 @@ def _format_book(item: Dict) -> str:
     return "\n".join(lines)
 
 
+def _book_keyboard(items: list, current_idx: int, cache_key: str) -> Optional[InlineKeyboardMarkup]:
+    """Row of buttons for switching results, excluding the one currently shown."""
+    buttons = []
+    for i, r in enumerate(items[:5]):
+        if i == current_idx:
+            continue
+        info = r.get("volumeInfo", {})
+        title = info.get("title", "?")[:20]
+        year = info.get("publishedDate", "")[:4]
+        label = f"{i+1}. {title}（{year}）" if year else f"{i+1}. {title}"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{cache_key}:{i}"))
+        if len(buttons) >= 3:
+            break
+    return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
 async def search_books(query: str) -> list:
-    """Search books and return up to 5 results; empty list on no results."""
+    """Search books; returns up to 5 result dicts or empty list."""
     cache_key = f"book:{query.lower()}"
     cached = await book_cache.get(cache_key)
     if cached:
@@ -97,34 +131,31 @@ async def search_books(query: str) -> list:
 
 
 async def on_book_button(update: Update, context) -> None:
-    query = update.callback_query
-    assert query
-    await query.answer()
+    q = update.callback_query
+    assert q
+    await q.answer()
 
-    _, cache_key, idx_str = query.data.split(":", 2)
+    _, cache_key, idx_str = q.data.split(":", 2)
     idx = int(idx_str)
 
     items = await book_cache.get(cache_key)
     if not items or idx >= len(items):
-        await query.edit_message_text("Result no longer cached. Please search again.")
+        await q.edit_message_text("结果已过期，请重新搜索。")
         return
 
     item = items[idx]
     text = _format_book(item)
+    keyboard = _book_keyboard(items, idx, cache_key)
 
-    buttons = []
-    for i, r in enumerate(items[1:4], start=2):
-        info = r.get("volumeInfo", {})
-        title = info.get("title", "?")[:30]
-        year = info.get("publishedDate", "")[:4]
-        label = f"{i}. {title} ({year})" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{cache_key}:{i-1}"))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
-    if query.message and query.message.photo:
-        await query.edit_message_caption(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    if q.message and q.message.photo:
+        try:
+            await q.edit_message_caption(text[:1024], parse_mode=ParseMode.HTML,
+                                         reply_markup=keyboard)
+        except Exception:
+            pass
     else:
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await q.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                  reply_markup=keyboard, disable_web_page_preview=True)
 
 
 async def cmd_book(update: Update, context) -> None:
@@ -132,10 +163,12 @@ async def cmd_book(update: Update, context) -> None:
     if not context.args:
         await msg.reply_text("用法：/book <书名或关键词>")
         return
+
     query = " ".join(context.args)
     status = await msg.reply_text("🔍 搜索中…")
     items = await search_books(query)
     await status.delete()
+
     if not items:
         await msg.reply_text(f"❌ 未找到：{query}")
         return
@@ -144,19 +177,22 @@ async def cmd_book(update: Update, context) -> None:
     await book_cache.set(short_key, items)
 
     text = _format_book(items[0])
-    buttons = []
-    for i, r in enumerate(items[1:4], start=2):
-        info = r.get("volumeInfo", {})
-        title = info.get("title", "?")[:28]
-        year = info.get("publishedDate", "")[:4]
-        label = f"{i}. {title}（{year}）" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{short_key}:{i-1}"))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-    await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-                         disable_web_page_preview=True)
+    keyboard = _book_keyboard(items, 0, short_key)
+    cover = get_cover_url(items[0])
+
+    if cover:
+        try:
+            await msg.reply_photo(cover, caption=text[:1024],
+                                  parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            return
+        except Exception:
+            pass
+    await msg.reply_text(text, parse_mode=ParseMode.HTML,
+                         reply_markup=keyboard, disable_web_page_preview=True)
 
 
 def setup(application: Application) -> None:
+    registry.register_command("book", cmd_book, "搜索书籍 <书名>")
     application.add_handler(CallbackQueryHandler(on_book_button, pattern=r"^book:"))
     application.add_handler(CommandHandler("book", cmd_book))
     log.info("book module loaded")

@@ -33,11 +33,13 @@ _HELP_TEXT = (
 )
 
 
-def _result(title: str, text: str, description: str = "") -> InlineQueryResultArticle:
+def _result(title: str, text: str, description: str = "",
+            thumb: str = "") -> InlineQueryResultArticle:
     return InlineQueryResultArticle(
         id=str(uuid.uuid4()),
         title=title,
         description=description,
+        thumbnail_url=thumb or None,
         input_message_content=InputTextMessageContent(
             message_text=text,
             parse_mode="HTML",
@@ -71,22 +73,26 @@ async def on_inline_query(update: Update, context) -> None:
             from modules.movie import search_tmdb, _format_movie, _IMG_BASE
             items = await search_tmdb(rest, prefix, context)
             if items is None:
-                results.append(_result("⚠️ API key not configured", "TMDB API key not set. Configure it in Web Admin → Settings.", ""))
+                results.append(_result("⚠️ API key not configured",
+                                       "TMDB API key not set. Configure it in Web Admin → Settings."))
             elif not items:
-                results.append(_result(f"No results for '{rest}'", f"No {prefix} results found.", ""))
+                results.append(_result(f"No results for '{rest}'",
+                                       f"No {prefix} results found."))
             else:
                 for item in items[:5]:
                     title = item.get("title") or item.get("name", "Unknown")
                     year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
                     desc = f"{year}" if year else ""
                     text = _format_movie(item, prefix)
-                    results.append(_result(title, text, desc))
+                    poster = item.get("poster_path")
+                    thumb = f"{_IMG_BASE}{poster}" if poster else ""
+                    results.append(_result(title, text, desc, thumb))
 
         elif prefix == "book" and rest:
-            from modules.book import search_books, _format_book
+            from modules.book import search_books, _format_book, get_cover_url
             items = await search_books(rest)
             if not items:
-                results.append(_result(f"No books for '{rest}'", "No books found.", ""))
+                results.append(_result(f"No books for '{rest}'", "No books found."))
             else:
                 for item in items[:5]:
                     info = item.get("volumeInfo", {})
@@ -95,49 +101,53 @@ async def on_inline_query(update: Update, context) -> None:
                     year = info.get("publishedDate", "")[:4]
                     desc = f"{authors} ({year})" if year else authors
                     text = _format_book(item)
-                    results.append(_result(title, text, desc))
+                    thumb = get_cover_url(item) or ""
+                    results.append(_result(title, text, desc, thumb))
 
         elif prefix == "music" and rest:
-            from modules.music import search_tracks, _format_track, _lastfm, music_cache, _get_api_key
+            from modules.music import (search_tracks, _format_track, _lastfm,
+                                       music_cache, _get_api_key, get_track_image,
+                                       _fetch_track_detail)
             tracks = await search_tracks(rest, context)
             if tracks is None:
-                results.append(_result("⚠️ API key not configured", "Last.fm API key not set. Configure it in Web Admin → Settings.", ""))
+                results.append(_result("⚠️ API key not configured",
+                                       "Last.fm API key not set. Configure it in Web Admin → Settings."))
             elif not tracks:
-                results.append(_result(f"No tracks for '{rest}'", "No tracks found.", ""))
+                results.append(_result(f"No tracks for '{rest}'", "No tracks found."))
             else:
                 api_key = await _get_api_key(context)
                 for t in tracks[:5]:
                     name = t.get("name", "?")
                     artist = t.get("artist", "")
                     artist_name = artist.get("name", "") if isinstance(artist, dict) else str(artist)
-                    detail_key = f"track_info:{artist_name}:{name}".lower()
-                    detail = await music_cache.get(detail_key)
-                    if not detail and api_key:
-                        d = await _lastfm("track.getInfo", api_key, artist=artist_name, track=name)
-                        detail = d.get("track", t) if d else t
-                        await music_cache.set(detail_key, detail)
+                    detail = {}
+                    if api_key:
+                        detail = await _fetch_track_detail(api_key, artist_name, name)
                     text = _format_track(detail or t)
-                    results.append(_result(f"{name} — {artist_name}", text, artist_name))
+                    thumb = get_track_image(detail) if detail else ""
+                    results.append(_result(f"{name} — {artist_name}", text, artist_name, thumb or ""))
 
         elif prefix == "artist" and rest:
-            from modules.music import search_artist, _format_artist
+            from modules.music import search_artist, _format_artist, get_artist_image
             found = await search_artist(rest, context)
             if found is None:
-                results.append(_result("⚠️ Not found or API key missing", f"Artist '{rest}' not found or Last.fm key not configured.", ""))
+                results.append(_result("⚠️ Not found or API key missing",
+                                       f"Artist '{rest}' not found or Last.fm key not configured."))
             else:
                 artist, top_tracks = found
                 name = artist.get("name", rest)
                 text = _format_artist(artist, top_tracks)
-                results.append(_result(name, text, "Last.fm artist"))
+                thumb = get_artist_image(artist) or ""
+                results.append(_result(name, text, "Last.fm artist", thumb))
 
         elif prefix == "game" and rest:
             from modules.psn import search_games, _format_game
             items = await search_games(rest)
             if items is None:
                 results.append(_result("⚠️ API key not configured",
-                                       "RAWG.io API key not set. Configure it in Web Admin → Settings.", ""))
+                                       "RAWG.io API key not set. Configure it in Web Admin → Settings."))
             elif not items:
-                results.append(_result(f"No games for '{rest}'", "No PS4/PS5 games found.", ""))
+                results.append(_result(f"No games for '{rest}'", "No PS4/PS5 games found."))
             else:
                 for item in items[:5]:
                     name = item.get("name", "Unknown")
@@ -145,7 +155,8 @@ async def on_inline_query(update: Update, context) -> None:
                     rating = item.get("rating", 0)
                     desc = f"{released}  ⭐{rating:.1f}" if released else (f"⭐{rating:.1f}" if rating else "")
                     text = _format_game(item)
-                    results.append(_result(name, text, desc))
+                    thumb = item.get("background_image") or ""
+                    results.append(_result(name, text, desc, thumb))
 
         elif prefix == "psn" and rest:
             from modules.psn import get_psn_profile, _format_psn_profile
