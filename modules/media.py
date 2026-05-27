@@ -98,41 +98,6 @@ def _is_auth_error(msg: str) -> bool:
     return any(p in m for p in _AUTH_REQUIRED_PHRASES)
 
 
-def _patch_ytparser_proxy() -> None:
-    """Inject the SOCKS5 proxy into yt-dlp's YoutubeDL params inside ParseHub.
-
-    ParseHub's YtParser builds params without a proxy key, so yt-dlp ignores
-    HTTP_PROXY / HTTPS_PROXY env vars (it reads them only at init time).
-    We patch the params property here so every YoutubeDL() call gets the proxy.
-    """
-    global _ytparser_patched
-    if _ytparser_patched:
-        return
-    proxy = (
-        os.environ.get("HTTPS_PROXY")
-        or os.environ.get("HTTP_PROXY")
-        or os.environ.get("ALL_PROXY")
-    )
-    if not proxy:
-        return
-    try:
-        from parsehub.parsers.base.ytdlp import YtParser
-
-        _orig_fget = YtParser.params.fget
-
-        def _patched_fget(self):
-            p = _orig_fget(self)
-            p["proxy"] = proxy
-            return p
-
-        YtParser.params = property(_patched_fget)
-        _ytparser_patched = True
-        log.info("YtParser proxy patched", proxy=proxy)
-    except Exception as e:
-        log.warning("Failed to patch YtParser proxy", error=str(e))
-
-
-
 def _get_ph():
     global _ph
     if _ph is None:
@@ -142,7 +107,6 @@ def _get_ph():
 
 
 def _get_proxy() -> Optional[str]:
-    """Return the configured outbound proxy (WARP / SOCKS5), if any."""
     return (
         os.environ.get("HTTPS_PROXY")
         or os.environ.get("HTTP_PROXY")
@@ -152,7 +116,6 @@ def _get_proxy() -> Optional[str]:
 
 
 async def _get_cookie(url: str) -> Optional[str]:
-    """Return the stored cookie for the URL's platform, or None."""
     from bot.database import get_bot_config
     url_lower = url.lower()
     for domain, key in _DOMAIN_COOKIE_KEY.items():
@@ -162,7 +125,6 @@ async def _get_cookie(url: str) -> Optional[str]:
 
 
 async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
-    """Send the owner a DM when a configured cookie stops working."""
     try:
         cfg = context.bot_data.get("config")
         owner_id = getattr(cfg, "owner_id", None)
@@ -183,15 +145,153 @@ async def _notify_cookie_expired(context, url: str, err: str = "") -> None:
             f"确认后更新 Cookie：<code>/setcookie {platform.lower()} &lt;新Cookie&gt;</code>",
             parse_mode="HTML",
         )
-        log.warning("Cookie expired notification sent", platform=platform, err=err[:100])
     except Exception as e:
         log.warning("Failed to notify owner of cookie expiry", error=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Bilibili direct parser (bypasses parsehub BiliAPI cookie limitation)
+# ---------------------------------------------------------------------------
+
+_BILI_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://www.bilibili.com",
+    "Origin": "https://www.bilibili.com",
+}
+_BILI_DOMAINS = ("bilibili.com", "b23.tv", "bili2233.cn")
+
+
+def _bili_parse_cookie(cookie_str: str) -> dict:
+    """Parse 'k=v; k=v' cookie string into dict."""
+    out = {}
+    for part in cookie_str.split(";"):
+        part = part.strip()
+        if "=" in part:
+            k, v = part.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
+async def _bili_direct_parse(
+    url: str,
+    cookie_str: str,
+    proxy: Optional[str],
+    tmp_dir: str,
+) -> tuple[Path, str, str]:
+    """
+    Direct B站 video download using stored cookie.
+    Returns (video_path, title, thumbnail_url). Raises on any failure.
+    """
+    import httpx
+
+    cookies = _bili_parse_cookie(cookie_str)
+
+    async with httpx.AsyncClient(
+        proxy=proxy,
+        headers=_BILI_HEADERS,
+        cookies=cookies,
+        timeout=httpx.Timeout(20.0),
+        follow_redirects=True,
+    ) as client:
+
+        # Resolve short links (b23.tv / bili2233.cn)
+        if any(x in url.lower() for x in ("b23.tv", "bili2233.cn")):
+            resp = await client.get(url)
+            url = str(resp.url)
+            log.info("Bili short link resolved", final=url)
+
+        # Extract BVID
+        m = re.search(r"BV[0-9A-Za-z]{10,}", url)
+        if not m:
+            raise ValueError(f"Cannot extract BVID from URL: {url}")
+        bvid = m.group(0)
+
+        # Step 1: video metadata (cookie 防止 412 风控)
+        r = await client.get(
+            "https://api.bilibili.com/x/web-interface/view/detail",
+            params={"bvid": bvid},
+        )
+        if r.status_code == 412:
+            raise Exception("触发B站风控 (412)，Cookie 可能已失效或 IP 被限")
+        info = r.json()
+        if not info.get("data"):
+            raise Exception(f"获取视频信息失败: code={info.get('code')} msg={info.get('message')}")
+
+        view = info["data"]["View"]
+        cid: int = view["cid"]
+        title: str = view.get("title", "")
+        pic: str = view.get("pic", "")
+        duration: int = view.get("duration", 0)
+        log.info("Bili video info ok", bvid=bvid, cid=cid, title=title[:40], duration=duration)
+
+        # Step 2: buvid fingerprint
+        r2 = await client.get("https://api.bilibili.com/x/frontend/finger/spi")
+        spi = r2.json().get("data", {})
+        full_cookies = {
+            **cookies,
+            "buvid3": spi.get("b_3", ""),
+            "buvid4": spi.get("b_4", ""),
+        }
+
+        # Step 3: playurl (request 1080P, B站 caps to account max)
+        r3 = await client.get(
+            "https://api.bilibili.com/x/player/playurl",
+            params={
+                "bvid": bvid,
+                "cid": cid,
+                "qn": 80,
+                "fnver": 0,
+                "fnval": 1,
+                "fourk": 1,
+                "from_client": "BROWSER",
+                "web_location": 1315873,
+            },
+            cookies=full_cookies,
+        )
+        pjson = r3.json()
+        pdata = pjson.get("data") or {}
+        durl = pdata.get("durl", [])
+        if not durl:
+            raise Exception(
+                f"playurl 返回空 durl: code={pjson.get('code')} msg={pjson.get('message')} "
+                f"quality={pdata.get('quality')}"
+            )
+
+        video_url: str = durl[0].get("url") or ""
+        if not video_url:
+            backup = durl[0].get("backup_url") or []
+            video_url = backup[0] if backup else ""
+        if not video_url:
+            raise Exception("durl 中无有效 URL")
+
+        quality = pdata.get("quality", 0)
+        size_bytes = durl[0].get("size", 0)
+        log.info("Bili playurl ok", bvid=bvid, quality=quality, size_mb=round(size_bytes / 1024 / 1024, 1))
+
+        # Step 4: stream download with extended timeout
+        output = Path(tmp_dir) / f"{bvid}.mp4"
+        dl_client = httpx.AsyncClient(
+            proxy=proxy,
+            headers=_BILI_HEADERS,
+            timeout=httpx.Timeout(10.0, read=300.0),
+            follow_redirects=True,
+        )
+        async with dl_client:
+            async with dl_client.stream("GET", video_url) as resp:
+                resp.raise_for_status()
+                with open(output, "wb") as f:
+                    async for chunk in resp.aiter_bytes(131072):
+                        f.write(chunk)
+
+        log.info("Bili download ok", path=str(output), size_mb=round(output.stat().st_size / 1024 / 1024, 1))
+        return output, title, pic
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _get_thumbnail(result) -> Optional[str]:
-    """Return the first thumbnail URL found in a parse result."""
     media = getattr(result, "media", None)
     if media is None:
         return None
@@ -204,7 +304,6 @@ def _get_thumbnail(result) -> Optional[str]:
 
 
 def _get_files(dr) -> list[Path]:
-    """Extract all downloaded file paths from a DownloadResult."""
     media = getattr(dr, "media", None)
     if media is None:
         return []
@@ -233,6 +332,65 @@ async def _process_url(update: Update, context, url: str) -> None:
     tmp_dir = tempfile.mkdtemp(prefix="ponygram_")
 
     try:
+        cookie = await _get_cookie(url)
+        proxy = _get_proxy()
+
+        # ------------------------------------------------------------------ #
+        # Bilibili: direct API parse (parsehub BiliAPI 不传 cookie 导致 412)  #
+        # ------------------------------------------------------------------ #
+        if any(d in url.lower() for d in _BILI_DOMAINS) and cookie:
+            try:
+                await status.edit_text("⏳ 解析中… (哔哩哔哩)")
+                bili_path, bili_title, bili_pic = await asyncio.wait_for(
+                    _bili_direct_parse(url, cookie, proxy, tmp_dir),
+                    timeout=180,
+                )
+                lines: list[str] = []
+                if bili_title:
+                    lines.append(f"🎬 <b>{html.escape(bili_title[:200])}</b>")
+                lines.append(f'🔗 <a href="{url}">哔哩哔哩</a>')
+                cap = "\n".join(lines)
+
+                if bili_path.exists() and bili_path.stat().st_size <= _TG_MAX_BYTES:
+                    if status:
+                        await status.delete()
+                        status = None
+                    with open(bili_path, "rb") as vf:
+                        await context.bot.send_video(
+                            chat.id,
+                            video=vf,
+                            caption=cap[:1024],
+                            parse_mode=ParseMode.HTML,
+                            supports_streaming=True,
+                            reply_to_message_id=msg.message_id,
+                        )
+                    log.info("Bili direct ok", title=bili_title[:50])
+                else:
+                    # File too large → send thumbnail + link
+                    if status:
+                        await status.delete()
+                        status = None
+                    over_msg = cap + "\n\n⚠️ <i>视频超过 50 MB，请点击原链接查看</i>"
+                    if bili_pic:
+                        await context.bot.send_photo(
+                            chat.id, photo=bili_pic,
+                            caption=over_msg[:1024], parse_mode=ParseMode.HTML,
+                            reply_to_message_id=msg.message_id,
+                        )
+                    else:
+                        await context.bot.send_message(
+                            chat.id, text=over_msg[:4096],
+                            parse_mode=ParseMode.HTML,
+                            reply_to_message_id=msg.message_id,
+                        )
+                return
+            except Exception as e:
+                log.warning("Bili direct parse failed, falling back to parsehub", error=str(e))
+                # fall through to parsehub
+
+        # ------------------------------------------------------------------ #
+        # Generic parsehub path                                               #
+        # ------------------------------------------------------------------ #
         try:
             from parsehub.errors import DownloadError, ParseError, UnknownPlatform
             ph = _get_ph()
@@ -241,11 +399,6 @@ async def _process_url(update: Update, context, url: str) -> None:
             await status.delete()
             return
 
-        # Fetch stored cookie for this platform (may be None)
-        cookie = await _get_cookie(url)
-        proxy = _get_proxy()
-
-        # Parse metadata — pass proxy so Instaloader / non-yt-dlp parsers also use WARP
         try:
             result = await asyncio.wait_for(
                 ph.parse(url, proxy=proxy, cookie=cookie),
@@ -299,7 +452,6 @@ async def _process_url(update: Update, context, url: str) -> None:
         await status.edit_text(f"⏳ 解析中… ({platform_name})")
         await context.bot.send_chat_action(chat.id, chat_action)
 
-        # Download files to temp dir
         files: list[Path] = []
         try:
             dr = await asyncio.wait_for(
@@ -307,19 +459,18 @@ async def _process_url(update: Update, context, url: str) -> None:
                 timeout=180,
             )
             files = _get_files(dr)
-        except (asyncio.TimeoutError, DownloadError, Exception) as e:
+        except (asyncio.TimeoutError, Exception) as e:
             log.warning("ParseHub download failed", url=url, error=str(e))
 
-        # Build caption
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
-        lines: list[str] = []
+        lines2: list[str] = []
         if title:
-            lines.append(f"🎬 <b>{title[:200]}</b>")
+            lines2.append(f"🎬 <b>{title[:200]}</b>")
         if content:
-            lines.append(f"\n{content[:600]}")
-        lines.append(f'\n🔗 <a href="{url}">{platform_name}</a>')
-        caption = "\n".join(lines)
+            lines2.append(f"\n{content[:600]}")
+        lines2.append(f'🔗 <a href="{url}">{platform_name}</a>')
+        caption = "\n".join(lines2)
 
         async def _send_info_card(extra: str = "") -> None:
             thumbnail = _get_thumbnail(result)
@@ -374,7 +525,6 @@ async def _process_url(update: Update, context, url: str) -> None:
         files_sent = 0
 
         if len(photos) >= 2:
-            # 多图图集 → send_media_group（最多10张）
             fhs = [open(fp, "rb") for fp in photos[:10]]
             try:
                 media_group = [
@@ -402,7 +552,6 @@ async def _process_url(update: Update, context, url: str) -> None:
                 )
             files_sent += 1
 
-        # 非图片文件（视频、音频、GIF、文档）逐个发送
         first_other = files_sent == 0
         for fp in others[:10 - files_sent]:
             ext = fp.suffix.lower()
@@ -467,7 +616,6 @@ async def _process_url(update: Update, context, url: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def on_message_url(update: Update, context) -> None:
-    """Auto-detect media URLs and trigger the ParseHub pipeline."""
     msg = update.effective_message
     chat = update.effective_chat
     if not msg or not chat or not msg.text:
@@ -486,7 +634,7 @@ async def on_message_url(update: Update, context) -> None:
 
     url = match.group(0).rstrip(".,;:!?)'\"")
     if not _is_known_url(url):
-        return  # skip random links silently
+        return
 
     await _process_url(update, context, url)
 
