@@ -49,11 +49,11 @@ _PLATFORM_DISPLAY: dict[str, str] = {
 _TEST_URLS: dict[str, str] = {
     # instagram: /p/ or /reel/ URLs only — no stable public post guaranteed; provide via arg
     # twitter:   /status/<id> URLs only — provide via arg
-    "bilibili":    "https://www.bilibili.com/video/BV1GJ411x7h7",
+    "bilibili":    "https://www.bilibili.com/video/BV14fQ4BEEWd",
     "youtube":     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "tiktok":      "https://www.tiktok.com/@tiktok/video/7106594312292453675",
-    "douyin":      "https://www.douyin.com/video/7376812765601591595",
-    "kuaishou":    "https://www.kuaishou.com/short-video/3xkmwfe4kqhmmym",
+    "tiktok":      "https://www.tiktok.com/@billieeilish/video/7305458431616867630",
+    "douyin":      "https://www.douyin.com/video/7304016981352050994",
+    "kuaishou":    "https://www.kuaishou.com/short-video/3xhi3i3amuvtgek",
     # xiaohongshu: /explore/<post_id> or /discovery/item/<id> — provide via arg
 }
 

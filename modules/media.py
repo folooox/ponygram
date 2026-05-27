@@ -33,7 +33,6 @@ from bot.logger import get_logger
 
 log = get_logger(__name__)
 
-_TG_MAX_BYTES = 49 * 1024 * 1024
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 
@@ -351,7 +350,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                 lines.append(f'🔗 <a href="{url}">哔哩哔哩</a>')
                 cap = "\n".join(lines)
 
-                if bili_path.exists() and bili_path.stat().st_size <= _TG_MAX_BYTES:
+                if bili_path.exists():
                     if status:
                         await status.delete()
                         status = None
@@ -365,24 +364,6 @@ async def _process_url(update: Update, context, url: str) -> None:
                             reply_to_message_id=msg.message_id,
                         )
                     log.info("Bili direct ok", title=bili_title[:50])
-                else:
-                    # File too large → send thumbnail + link
-                    if status:
-                        await status.delete()
-                        status = None
-                    over_msg = cap + "\n\n⚠️ <i>视频超过 50 MB，请点击原链接查看</i>"
-                    if bili_pic:
-                        await context.bot.send_photo(
-                            chat.id, photo=bili_pic,
-                            caption=over_msg[:1024], parse_mode=ParseMode.HTML,
-                            reply_to_message_id=msg.message_id,
-                        )
-                    else:
-                        await context.bot.send_message(
-                            chat.id, text=over_msg[:4096],
-                            parse_mode=ParseMode.HTML,
-                            reply_to_message_id=msg.message_id,
-                        )
                 return
             except Exception as e:
                 log.warning("Bili direct parse failed, falling back to parsehub", error=str(e))
@@ -501,13 +482,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             await _send_info_card("\n\n⚠️ <i>下载失败，请点击原链接查看</i>")
             return
 
-        sendable = [f for f in files if f.stat().st_size <= _TG_MAX_BYTES]
-        if not sendable:
-            if status:
-                await status.delete()
-                status = None
-            await _send_info_card("\n\n⚠️ <i>文件超过 50 MB，请点击原链接查看</i>")
-            return
+        sendable = files
 
         if status:
             await status.delete()

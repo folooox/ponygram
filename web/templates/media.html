@@ -27,6 +27,10 @@
 .spin { display:inline-block; animation:spin .7s linear infinite; }
 /* Cookie textarea */
 .cookie-ta { font-size:.73rem; font-family:monospace; resize:vertical; min-height:52px; max-height:120px; }
+/* Test-all status badges */
+.badge-testing  { background:#1e3a5f22; color:#60a5fa; border:1px solid #1e3a5f55; }
+.badge-test-ok  { background:#16a34a22; color:#4ade80; border:1px solid #16a34a55; }
+.badge-test-err { background:#dc262622; color:#f87171; border:1px solid #dc262655; cursor:help; }
 </style>
 
 <div class="d-flex align-items-center mb-4 gap-3">
@@ -93,6 +97,10 @@
     <div class="d-flex align-items-center justify-content-between mb-3">
       <h6 class="fw-semibold mb-0"><i class="bi bi-grid me-1"></i>平台列表</h6>
       <div class="d-flex gap-2 align-items-center">
+        <span id="testAllProgress" class="small text-secondary" style="display:none"></span>
+        <button class="btn btn-sm btn-outline-warning" id="testAllBtn" onclick="runAllTests()">
+          <i class="bi bi-lightning-charge-fill me-1"></i>测试全部
+        </button>
         <input type="search" class="form-control form-control-sm" style="width:160px"
                placeholder="搜索平台…" oninput="filterPlatforms(this.value)">
       </div>
@@ -106,6 +114,7 @@
             <th style="padding:.4rem .75rem">域名</th>
             <th style="width:120px;padding:.4rem .75rem">Cookie</th>
             <th style="width:96px;padding:.4rem .75rem">解析方式</th>
+            <th style="width:96px;padding:.4rem .75rem">测试状态</th>
             <th style="width:88px;padding:.4rem .75rem"></th>
           </tr>
         </thead>
@@ -140,6 +149,9 @@
               {% endif %}
             </td>
             <td>
+              <span id="test-badge-{{ p.id }}" class="sml-badge badge-missing">—</span>
+            </td>
+            <td>
               <div class="d-flex gap-1">
                 <button class="btn btn-sm btn-outline-secondary btn-icon"
                         onclick="quickTest('{{ p.example_url }}')"
@@ -161,7 +173,7 @@
           {# Cookie inline editor row #}
           {% if p.cookie_key %}
           <tr class="cookie-edit-row" id="cookie-row-{{ p.id }}" style="display:none">
-            <td colspan="5">
+            <td colspan="6">
               <div class="cookie-edit-panel">
                 <div class="d-flex align-items-center gap-2 mb-2">
                   <span class="text-secondary small"><i class="bi bi-key me-1"></i>配置键：</span>
@@ -344,6 +356,58 @@ async function runTest() {
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-play-fill me-1"></i>解析';
   }
+}
+
+// ── Test all platforms ──────────────────────────────────────────
+async function runAllTests() {
+  const btn = document.getElementById('testAllBtn');
+  const progress = document.getElementById('testAllProgress');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-arrow-clockwise spin me-1"></i>测试中…';
+
+  const total = PLATFORMS.length;
+  let done = 0;
+
+  for (const p of PLATFORMS) {
+    const badge = document.getElementById(`test-badge-${p.id}`);
+    if (!badge) { done++; continue; }
+
+    badge.className = 'sml-badge badge-testing';
+    badge.textContent = '⟳';
+    badge.title = '';
+    progress.style.display = '';
+    progress.textContent = `${done}/${total}`;
+
+    try {
+      const t0 = Date.now();
+      const r = await fetch('/health/check/media', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: p.exampleUrl}),
+      });
+      const d = await r.json();
+      const ms = Date.now() - t0;
+      if (d.status === 'ok') {
+        badge.className = 'sml-badge badge-test-ok';
+        badge.textContent = `✓ ${ms}ms`;
+        badge.title = JSON.stringify(d, null, 2).slice(0, 300);
+      } else {
+        badge.className = 'sml-badge badge-test-err';
+        badge.textContent = '✗ 失败';
+        badge.title = d.detail || d.error || JSON.stringify(d).slice(0, 200);
+      }
+    } catch(e) {
+      badge.className = 'sml-badge badge-test-err';
+      badge.textContent = '✗ 错误';
+      badge.title = String(e);
+    }
+    done++;
+    progress.textContent = `${done}/${total}`;
+  }
+
+  btn.disabled = false;
+  btn.innerHTML = '<i class="bi bi-lightning-charge-fill me-1"></i>测试全部';
+  progress.textContent = `完成 ${total}/${total}`;
 }
 
 // ── Cookie management ───────────────────────────────────────────
