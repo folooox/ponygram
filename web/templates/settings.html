@@ -183,14 +183,70 @@
     </div>
   </div>
 
-  <div class="mt-2">
+  <div class="mt-2 mb-4">
     <button type="submit" class="btn btn-primary">
       <i class="bi bi-floppy me-1"></i> 保存
     </button>
   </div>
 </form>
 
+{# ── AI 翻译测试 ─────────────────────────────────────── #}
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-1 text-secondary text-uppercase" style="font-size:.75rem;letter-spacing:.05em">
+      <i class="bi bi-translate me-1"></i>AI 翻译测试
+    </h6>
+    <p class="text-secondary small mb-3">
+      测试游戏名翻译效果（优先使用 DeepSeek，回退到 Claude）。
+      {% if configs.get('deepseek_api_key') %}
+        <span class="badge bg-success" style="font-size:.65rem">DeepSeek 已配置</span>
+      {% elif configs.get('claude_api_key') %}
+        <span class="badge bg-info text-dark" style="font-size:.65rem">Claude 已配置</span>
+      {% else %}
+        <span class="badge bg-danger" style="font-size:.65rem">未配置 AI Key</span>
+      {% endif %}
+    </p>
+    <div class="d-flex gap-2">
+      <input type="text" id="translateInput" class="form-control bg-dark border-secondary text-light"
+             placeholder="输入中文游戏名，如：对马岛之魂" style="font-size:.88rem">
+      <button type="button" class="btn btn-outline-info"
+              onclick="testTranslate()"
+              style="white-space:nowrap;min-width:72px"
+              {% if not configs.get('deepseek_api_key') and not configs.get('claude_api_key') %}disabled{% endif %}>
+        <i class="bi bi-arrow-right-circle me-1"></i>翻译
+      </button>
+    </div>
+    <div id="translateResult" class="small mt-2" style="display:none"></div>
+  </div>
+</div>
+
 <script>
+async function testTranslate() {
+  const input = document.getElementById('translateInput');
+  const result = document.getElementById('translateResult');
+  const text = input.value.trim();
+  if (!text) return;
+
+  result.style.display = '';
+  result.innerHTML = '<span class="text-secondary">翻译中…</span>';
+
+  try {
+    const r = await fetch('/settings/test-translate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({text})
+    });
+    const d = await r.json();
+    if (d.error) {
+      result.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${d.error}</span>`;
+    } else {
+      result.innerHTML = `<span class="text-success"><i class="bi bi-check-circle-fill me-1"></i><strong>${d.result}</strong></span> <span class="text-secondary small">via ${d.provider}</span>`;
+    }
+  } catch(e) {
+    result.innerHTML = `<span class="text-danger">请求失败: ${e}</span>`;
+  }
+}
+
 async function testKey(service, btn) {
   const resultEl = document.getElementById(`test-result-${service}`);
   const origHtml = btn.innerHTML;

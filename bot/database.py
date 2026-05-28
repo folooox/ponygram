@@ -632,6 +632,21 @@ async def upsert_psn_game(
         row: Optional[PsnLibraryGame] = None
         if game_id:
             row = await s.get(PsnLibraryGame, game_id)
+        if not row and product_id:
+            res = await s.execute(
+                select(PsnLibraryGame).where(PsnLibraryGame.product_id == product_id).limit(1)
+            )
+            row = res.scalars().first()
+        if not row and title_en:
+            res = await s.execute(
+                select(PsnLibraryGame)
+                .where(
+                    func.lower(PsnLibraryGame.title_en) == title_en.lower(),
+                    PsnLibraryGame.tier == tier,
+                )
+                .limit(1)
+            )
+            row = res.scalars().first()
         if not row:
             row = PsnLibraryGame()
             s.add(row)
@@ -655,6 +670,30 @@ async def upsert_psn_game(
         await s.commit()
         await s.refresh(row)
         return row
+
+
+async def match_psn_game(en_name: str) -> Optional[PsnLibraryGame]:
+    """Exact then fuzzy match on title_en; returns best row (lowest tier first)."""
+    async with get_session() as s:
+        # Exact match first
+        result = await s.execute(
+            select(PsnLibraryGame)
+            .where(func.lower(PsnLibraryGame.title_en) == en_name.lower())
+            .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
+            .limit(1)
+        )
+        row = result.scalars().first()
+        if row:
+            return row
+        # Fuzzy match
+        kw = f"%{en_name}%"
+        result = await s.execute(
+            select(PsnLibraryGame)
+            .where(PsnLibraryGame.title_en.ilike(kw))
+            .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
 
 async def delete_psn_game(game_id: int) -> bool:
