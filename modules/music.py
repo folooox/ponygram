@@ -1,15 +1,21 @@
 """
 Music search module — powered by Last.fm API.
 
-Accessible via Telegram inline mode: @bot music <artist - track>  /  @bot artist <name>
-Requires LASTFM_API_KEY (env or Web Admin UI → Settings).
+Accessible via:
+  @bot music <artist - track>  — inline picker
+  @bot artist <name>           — inline picker
+  /music <query>               — direct command (album art + navigation)
+  /artist <name>               — direct command
+
+Requires lastfm_api_key in Web Admin → Settings.
 Results cached 30 minutes per query.
 """
 
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Dict, List, Optional
+import re
+from typing import Dict, List, Optional
 
 import aiohttp
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -19,6 +25,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 from bot.cache import music_cache
 from bot.database import get_bot_config
 from bot.logger import get_logger
+from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -37,7 +44,8 @@ async def _lastfm(method: str, api_key: str, **params) -> Optional[Dict]:
     params.update({"method": method, "api_key": api_key, "format": "json"})
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(_LASTFM_BASE, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with session.get(_LASTFM_BASE, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
                     return None
                 data = await r.json()
@@ -62,6 +70,34 @@ def _playcount_fmt(n) -> str:
     return str(n)
 
 
+def _strip_html(text: str) -> str:
+    text = re.sub(r'<a href="[^"]*">.*?</a>', "", text).strip()
+    return re.sub(r"<[^>]+>", "", text)
+
+
+def get_track_image(detail: Dict) -> Optional[str]:
+    """Extract album art URL from a track.getInfo result dict."""
+    album = detail.get("album") or {}
+    images = album.get("image") or []
+    for size in ("extralarge", "large", "medium"):
+        for img in images:
+            url = img.get("#text", "")
+            if img.get("size") == size and url:
+                return url
+    return None
+
+
+def get_artist_image(artist: Dict) -> Optional[str]:
+    """Extract artist image URL from an artist.getInfo result dict."""
+    images = artist.get("image") or []
+    for size in ("extralarge", "large", "mega"):
+        for img in images:
+            url = img.get("#text", "")
+            if img.get("size") == size and url:
+                return url
+    return None
+
+
 def _format_track(track: Dict) -> str:
     name = track.get("name", "Unknown")
     artist = track.get("artist", {})
@@ -70,12 +106,8 @@ def _format_track(track: Dict) -> str:
     playcount = track.get("playcount", "")
     url = track.get("url", "")
 
-    wiki = track.get("wiki", {})
-    summary = wiki.get("summary", "") if wiki else ""
-    # Strip Last.fm "Read more" anchor tags
-    import re
-    summary = re.sub(r'<a href="[^"]*">.*?</a>', "", summary).strip()
-    summary = re.sub(r"<[^>]+>", "", summary)
+    wiki = track.get("wiki") or {}
+    summary = _strip_html(wiki.get("summary", ""))
     if len(summary) > 300:
         summary = summary[:300].rstrip() + "…"
 
@@ -102,11 +134,8 @@ def _format_artist(artist: Dict, top_tracks: List[Dict]) -> str:
     playcount = artist.get("stats", {}).get("playcount", "")
     url = artist.get("url", "")
 
-    bio = artist.get("bio", {})
-    summary = bio.get("summary", "") if bio else ""
-    import re
-    summary = re.sub(r'<a href="[^"]*">.*?</a>', "", summary).strip()
-    summary = re.sub(r"<[^>]+>", "", summary)
+    bio = artist.get("bio") or {}
+    summary = _strip_html(bio.get("summary", ""))
     if len(summary) > 300:
         summary = summary[:300].rstrip() + "…"
 
@@ -125,17 +154,32 @@ def _format_artist(artist: Dict, top_tracks: List[Dict]) -> str:
         for i, t in enumerate(top_tracks[:5], 1):
             t_name = t.get("name", "?")
             t_url = t.get("url", "")
-            if t_url:
-                lines.append(f'{i}. <a href="{t_url}">{t_name}</a>')
-            else:
-                lines.append(f"{i}. {t_name}")
+            lines.append(f'{i}. <a href="{t_url}">{t_name}</a>' if t_url else f"{i}. {t_name}")
     if url:
         lines.append(f'\n🔗 <a href="{url}">Last.fm</a>')
     return "\n".join(lines)
 
 
+def _track_keyboard(results: list, current_idx: int, cache_key: str) -> Optional[InlineKeyboardMarkup]:
+    """Row of track buttons excluding the currently shown one."""
+    buttons = []
+    for i, t in enumerate(results[:5]):
+        if i == current_idx:
+            continue
+        a = t.get("artist", "?")
+        artist_name = a.get("name", "?") if isinstance(a, dict) else str(a)
+        n = t.get("name", "?")[:18]
+        buttons.append(InlineKeyboardButton(
+            f"{i+1}. {n} — {artist_name[:12]}",
+            callback_data=f"music:track:{cache_key}:{i}",
+        ))
+        if len(buttons) >= 3:
+            break
+    return InlineKeyboardMarkup([buttons]) if buttons else None
+
+
 async def search_tracks(query: str, context) -> Optional[list]:
-    """Search tracks and return list, or None on API error."""
+    """Search tracks; returns list or None on API error."""
     api_key = await _get_api_key(context)
     if not api_key:
         return None
@@ -176,44 +220,60 @@ async def search_artist(name: str, context) -> Optional[tuple]:
         return None
     top_data = await _lastfm("artist.getTopTracks", api_key, artist=name, limit=5)
     top_tracks = (top_data or {}).get("toptracks", {}).get("track", [])
-    await music_cache.set(cache_key, (artist, top_tracks))
-    return artist, top_tracks
+    result = (artist, top_tracks)
+    await music_cache.set(cache_key, result)
+    return result
+
+
+async def _fetch_track_detail(api_key: str, artist_name: str, track_name: str) -> Dict:
+    """Fetch full track info from Last.fm; returns raw track dict or empty."""
+    detail_key = f"track_info:{artist_name}:{track_name}".lower()
+    cached = await music_cache.get(detail_key)
+    if cached:
+        return cached
+    d = await _lastfm("track.getInfo", api_key, artist=artist_name, track=track_name)
+    detail = d.get("track", {}) if d else {}
+    if detail:
+        await music_cache.set(detail_key, detail)
+    return detail
 
 
 async def on_music_button(update: Update, context) -> None:
-    query = update.callback_query
-    assert query
-    await query.answer()
+    q = update.callback_query
+    assert q
+    await q.answer()
 
-    _, kind, cache_key, idx_str = query.data.split(":", 3)
+    _, kind, cache_key, idx_str = q.data.split(":", 3)
     idx = int(idx_str)
     api_key = await _get_api_key(context)
 
-    if kind == "track":
-        results = await music_cache.get(cache_key)
-        if not results or idx >= len(results):
-            await query.edit_message_text("Result no longer cached. Please search again.")
+    if kind != "track":
+        return
+
+    results = await music_cache.get(cache_key)
+    if not results or idx >= len(results):
+        await q.edit_message_text("结果已过期，请重新搜索。")
+        return
+
+    top = results[idx]
+    artist_name = (top.get("artist") or {})
+    artist_name = artist_name.get("name", "") if isinstance(artist_name, dict) else str(artist_name)
+    detail = {}
+    if api_key:
+        detail = await _fetch_track_detail(api_key, artist_name, top.get("name", ""))
+
+    text = _format_track(detail or top)
+    keyboard = _track_keyboard(results, idx, cache_key)
+
+    if q.message and q.message.photo:
+        try:
+            await q.edit_message_caption(text[:1024], parse_mode=ParseMode.HTML,
+                                         reply_markup=keyboard)
             return
-        top = results[idx]
-        detail_key = f"track_info:{top.get('artist','')}:{top.get('name','')}".lower()
-        detail = await music_cache.get(detail_key)
-        if not detail and api_key:
-            d = await _lastfm("track.getInfo", api_key,
-                              artist=top.get("artist", ""), track=top.get("name", ""))
-            detail = d.get("track", top) if d else top
-            await music_cache.set(detail_key, detail)
-        text = _format_track(detail or top)
-        buttons = []
-        for i, t in enumerate(results[1:4], start=2):
-            a = t.get("artist", "?")
-            n = t.get("name", "?")[:25]
-            buttons.append(InlineKeyboardButton(
-                f"{i}. {n} — {a[:15]}",
-                callback_data=f"music:track:{cache_key}:{i-1}",
-            ))
-        keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                      reply_markup=keyboard, disable_web_page_preview=True)
+        except Exception:
+            pass
+    await q.edit_message_text(text, parse_mode=ParseMode.HTML,
+                               reply_markup=keyboard, disable_web_page_preview=True)
 
 
 async def cmd_music(update: Update, context) -> None:
@@ -221,10 +281,12 @@ async def cmd_music(update: Update, context) -> None:
     if not context.args:
         await msg.reply_text("用法：/music <歌手 - 歌曲名>  或  /music <歌曲名>")
         return
+
     query = " ".join(context.args)
     status = await msg.reply_text("🔍 搜索中…")
     results = await search_tracks(query, context)
     await status.delete()
+
     if results is None:
         await msg.reply_text("❌ Last.fm API 未配置，请在 Web 面板 → 设置 中添加 API Key")
         return
@@ -237,22 +299,23 @@ async def cmd_music(update: Update, context) -> None:
 
     api_key = await _get_api_key(context)
     top = results[0]
-    detail = None
+    artist_name = (top.get("artist") or {})
+    artist_name = artist_name.get("name", "") if isinstance(artist_name, dict) else str(artist_name)
+    detail = {}
     if api_key:
-        d = await _lastfm("track.getInfo", api_key,
-                          artist=top.get("artist", ""), track=top.get("name", ""))
-        detail = d.get("track", top) if d else top
-    text = _format_track(detail or top)
+        detail = await _fetch_track_detail(api_key, artist_name, top.get("name", ""))
 
-    buttons = []
-    for i, t in enumerate(results[1:4], start=2):
-        a = t.get("artist", "?")
-        n = t.get("name", "?")[:22]
-        buttons.append(InlineKeyboardButton(
-            f"{i}. {n} — {a[:12]}",
-            callback_data=f"music:track:{short_key}:{i-1}",
-        ))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
+    text = _format_track(detail or top)
+    keyboard = _track_keyboard(results, 0, short_key)
+    art_url = get_track_image(detail) if detail else None
+
+    if art_url:
+        try:
+            await msg.reply_photo(art_url, caption=text[:1024],
+                                  parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            return
+        except Exception:
+            pass
     await msg.reply_text(text, parse_mode=ParseMode.HTML,
                          reply_markup=keyboard, disable_web_page_preview=True)
 
@@ -262,10 +325,12 @@ async def cmd_artist(update: Update, context) -> None:
     if not context.args:
         await msg.reply_text("用法：/artist <歌手名>")
         return
+
     name = " ".join(context.args)
     status = await msg.reply_text("🔍 搜索中…")
     result = await search_artist(name, context)
     await status.delete()
+
     if result is None:
         await msg.reply_text("❌ Last.fm API 未配置，请在 Web 面板 → 设置 中添加 API Key")
         return
@@ -273,11 +338,22 @@ async def cmd_artist(update: Update, context) -> None:
     if not artist:
         await msg.reply_text(f"❌ 未找到歌手：{name}")
         return
+
     text = _format_artist(artist, top_tracks)
+    art_url = get_artist_image(artist)
+
+    if art_url:
+        try:
+            await msg.reply_photo(art_url, caption=text[:1024], parse_mode=ParseMode.HTML)
+            return
+        except Exception:
+            pass
     await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 def setup(application: Application) -> None:
+    registry.register_command("music", cmd_music, "搜索音乐 <歌手 - 歌名>")
+    registry.register_command("artist", cmd_artist, "搜索歌手信息 <歌手名>")
     application.add_handler(CallbackQueryHandler(on_music_button, pattern=r"^music:"))
     application.add_handler(CommandHandler("music", cmd_music))
     application.add_handler(CommandHandler("artist", cmd_artist))
