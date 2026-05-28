@@ -36,6 +36,7 @@ from fastapi.templating import Jinja2Templates
 from bot.database import (
     Blacklist,
     GroupSettings,
+    PsnColumnsConfig,
     PsnLibraryGame,
     RssFeed,
     User,
@@ -45,19 +46,23 @@ from bot.database import (
     bulk_import_psn_games,
     count_psn_library_games,
     delete_bot_config,
+    delete_psn_column,
     delete_psn_game,
     get_all_bot_configs,
     get_all_rss_feeds,
     get_bot_config,
     get_group_settings,
+    get_psn_columns,
     get_psn_game_by_id,
     get_psn_library_games,
     get_session,
+    patch_psn_game_cell,
     remove_from_blacklist,
     remove_rss_feed,
     set_bot_config,
     set_feed_paused,
     set_group_field,
+    upsert_psn_column,
     upsert_psn_game,
 )
 from bot.utils import normalize_cookie
@@ -176,6 +181,26 @@ _SKIP_EN = _re.compile(
     _re.IGNORECASE
 )
 
+_LANG_PAREN = _re.compile(
+    r'[\(（](?:[简繁體体]+[中文日英韩泰韓越]+|.+?[文版本]|中.{0,4}英.{0,4}韩.{0,4}'
+    r'|Chinese|Korean|Japanese|English|version)[^)）]*[\)）]',
+    _re.IGNORECASE,
+)
+_PLAT_PAREN = _re.compile(r'[\(（]\s*PS[45].{0,30}?[\)）]', _re.IGNORECASE)
+_TAIL_TAGS  = _re.compile(
+    r'\s*(?:PS[45][?？]?\s*[&和]?\s*PS[45][?？]?|主機版|PlayStation\s*Plus)\s*$',
+    _re.IGNORECASE,
+)
+
+
+def _clean_zh_name(s: str) -> str:
+    """Strip language/platform noise from a PS Store Chinese title."""
+    s = _LANG_PAREN.sub('', s)
+    s = _PLAT_PAREN.sub('', s)
+    s = _re.sub(r'\s*[\(（]\s*[\)）]', '', s)  # empty brackets
+    s = _TAIL_TAGS.sub('', s)
+    return s.strip(' \t　《》')
+
 
 def _extract_en_from_name(name: str) -> tuple[str, str]:
     """
@@ -194,7 +219,7 @@ def _extract_en_from_name(name: str) -> tuple[str, str]:
 
         if _re.search(r'[一-鿿぀-ヿ가-힯]', inner):
             # CJK title inside 《》
-            zh = inner
+            zh = _clean_zh_name(inner)
             # Look for English title text after 》
             if (after_pre and len(after_pre) >= 3
                     and not _re.search(r'[一-鿿぀-ヿ가-힯]', after_pre)
@@ -213,7 +238,7 @@ def _extract_en_from_name(name: str) -> tuple[str, str]:
                      '', en, flags=_re.IGNORECASE).strip()
         return en, ""
 
-    return "", name
+    return "", _clean_zh_name(name)
 
 
 def _parse_ps_store_csv_bytes(data: bytes) -> List[dict]:
@@ -1124,7 +1149,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
     @app.get("/psn-library", response_class=HTMLResponse)
     async def psn_library_page(
         request: Request,
-        tier: Optional[int] = None,
+        tier: Optional[str] = None,
         status: Optional[str] = None,
         q: Optional[str] = None,
         page: int = 1,
@@ -1133,23 +1158,31 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
     ):
         if not _authed(session):
             return _redirect_login()
+        tier_int: Optional[int] = None
+        if tier and tier.strip().isdigit():
+            tier_int = int(tier.strip())
+        status_val = status.strip() if status else None
+        if status_val == "":
+            status_val = None
         per_page = 50
         offset = (page - 1) * per_page
         games = await get_psn_library_games(
-            tier=tier, status=status, keyword=q, limit=per_page, offset=offset
+            tier=tier_int, status=status_val, keyword=q, limit=per_page, offset=offset
         )
-        total = await count_psn_library_games(tier=tier, status=status, keyword=q)
+        total = await count_psn_library_games(tier=tier_int, status=status_val, keyword=q)
         total_pages = max(1, (total + per_page - 1) // per_page)
+        columns = await get_psn_columns()
         return templates.TemplateResponse(request, "psn_library.html", {
             "active": "psn_library",
             "games": games,
             "total": total,
             "page": page,
             "total_pages": total_pages,
-            "filter_tier": tier,
-            "filter_status": status,
+            "filter_tier": tier_int,
+            "filter_status": status_val,
             "filter_q": q or "",
             "msg": msg,
+            "columns": columns,
         })
 
     @app.post("/psn-library/add")
@@ -1174,6 +1207,95 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
         await delete_psn_game(game_id)
         return RedirectResponse(url="/psn-library?msg=deleted", status_code=303)
+
+    @app.patch("/psn-library/{game_id}/cell")
+    async def psn_library_patch_cell(
+        game_id: int, request: Request, session: Optional[str] = Cookie(None)
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        field = (body.get("field") or "").strip()
+        value = body.get("value", "")
+        if not field:
+            return JSONResponse({"error": "field required"}, status_code=400)
+        ok = await patch_psn_game_cell(game_id, field, str(value) if value is not None else "")
+        if not ok:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return JSONResponse({"status": "saved"})
+
+    @app.post("/psn-library/add-empty")
+    async def psn_library_add_empty(session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        from datetime import date
+        row = await upsert_psn_game(
+            title_en="",
+            entry_date=date.today(),
+            tier=2,
+            status="active",
+            region="HK",
+        )
+        return JSONResponse({"id": row.id if row else None})
+
+    @app.get("/psn-library/columns")
+    async def psn_library_get_columns(session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        cols = await get_psn_columns()
+        return JSONResponse([{
+            "col_key": c.col_key, "display_name": c.display_name,
+            "col_type": c.col_type, "is_core": c.is_core,
+            "visible": c.visible, "sort_order": c.sort_order,
+        } for c in cols])
+
+    @app.post("/psn-library/columns")
+    async def psn_library_add_column(
+        request: Request, session: Optional[str] = Cookie(None)
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        col_key = (body.get("col_key") or "").strip()
+        display_name = (body.get("display_name") or col_key).strip()
+        col_type = (body.get("col_type") or "text").strip()
+        if not col_key:
+            return JSONResponse({"error": "col_key required"}, status_code=400)
+        col = await upsert_psn_column(col_key, display_name=display_name,
+                                      col_type=col_type, is_core=False)
+        return JSONResponse({"col_key": col.col_key, "display_name": col.display_name})
+
+    @app.patch("/psn-library/columns/{col_key}")
+    async def psn_library_patch_column(
+        col_key: str, request: Request, session: Optional[str] = Cookie(None)
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        existing_cols = await get_psn_columns()
+        existing = next((c for c in existing_cols if c.col_key == col_key), None)
+        if not existing:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        col = await upsert_psn_column(
+            col_key,
+            display_name=body.get("display_name", existing.display_name),
+            col_type=body.get("col_type", existing.col_type),
+            is_core=existing.is_core,
+            visible=body.get("visible", existing.visible),
+            sort_order=body.get("sort_order", existing.sort_order),
+        )
+        return JSONResponse({"col_key": col.col_key})
+
+    @app.delete("/psn-library/columns/{col_key}")
+    async def psn_library_delete_column(
+        col_key: str, session: Optional[str] = Cookie(None)
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        ok = await delete_psn_column(col_key)
+        if not ok:
+            return JSONResponse({"error": "not found or core column"}, status_code=400)
+        return JSONResponse({"status": "deleted"})
 
     @app.post("/psn-library/bulk")
     async def psn_library_bulk(request: Request, session: Optional[str] = Cookie(None)):

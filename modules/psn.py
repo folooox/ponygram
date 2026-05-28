@@ -110,6 +110,24 @@ def _get_ps_store_url(detail: Optional[Dict], game_name: str, db_game=None) -> s
     return f"https://store.playstation.com/zh-hant-hk/search/{urlquote(game_name)}"
 
 
+def _norm_vendor(s: str) -> str:
+    return re.sub(r'[\s\W_]+', '', s).lower()
+
+
+def _dedup_vendors(names: list) -> list:
+    """Remove case-insensitive substring-duplicate vendor names."""
+    out: list = []
+    for n in names:
+        n = n.strip()
+        if not n:
+            continue
+        norm = _norm_vendor(n)
+        if any(norm in _norm_vendor(o) or _norm_vendor(o) in norm for o in out):
+            continue
+        out.append(n)
+    return out
+
+
 def _format_game(item: Dict, detail: Optional[Dict] = None,
                  store_url: Optional[str] = None,
                  title_zh: Optional[str] = None,
@@ -131,12 +149,16 @@ def _format_game(item: Dict, detail: Optional[Dict] = None,
 
     vendor_en = ""
     if detail:
-        devs = [d["name"] for d in detail.get("developers", [])[:2]]
-        pubs = [p["name"] for p in detail.get("publishers", [])[:1]]
-        if devs and pubs and pubs[0] not in devs:
-            vendor_en = " / ".join(devs) + f"  |  {pubs[0]}"
+        devs = _dedup_vendors([d["name"] for d in detail.get("developers", [])[:3]])
+        pubs = _dedup_vendors([p["name"] for p in detail.get("publishers", [])[:2]])
+        # Drop publishers that are substrings of any developer (same company, different case)
+        pubs = [p for p in pubs
+                if not any(_norm_vendor(p) in _norm_vendor(d) or
+                           _norm_vendor(d) in _norm_vendor(p) for d in devs)]
+        if devs and pubs:
+            vendor_en = devs[0] + "  |  " + pubs[0]
         elif devs:
-            vendor_en = " / ".join(devs)
+            vendor_en = " / ".join(devs[:2])
         elif pubs:
             vendor_en = pubs[0]
 
@@ -153,8 +175,10 @@ def _format_game(item: Dict, detail: Optional[Dict] = None,
     if ps_platforms:
         lines.append(f"🕹 {' / '.join(ps_platforms)}")
 
-    # Bilingual developer
-    if developer_zh and vendor_en and developer_zh.strip() != vendor_en.strip():
+    # Bilingual developer: only wrap in bilingual if zh is genuinely different from en
+    dev_en_base = vendor_en.split("  |  ")[0] if "  |  " in vendor_en else vendor_en
+    if (developer_zh and vendor_en
+            and _norm_vendor(developer_zh) != _norm_vendor(dev_en_base)):
         lines.append(f"🏢 {html.escape(developer_zh.strip())} ( {html.escape(vendor_en)} )")
     elif vendor_en:
         lines.append(f"🏢 {html.escape(vendor_en)}")
@@ -321,6 +345,14 @@ async def _translate_game_data_to_zh(en_name: str, en_developer: str = "") -> Tu
                 result = (parsed.get("name_zh") or None, parsed.get("dev_zh") or None)
             except Exception as e:
                 log.warning("Claude zh translation failed", error=str(e))
+
+    # If dev_zh is essentially the same as en_developer (just transliteration/case),
+    # drop it to avoid wrapping foreign names in fake bilingual brackets.
+    name_zh_out, dev_zh_out = result
+    if dev_zh_out and en_developer:
+        if _norm_vendor(dev_zh_out) == _norm_vendor(en_developer):
+            dev_zh_out = None
+    result = (name_zh_out, dev_zh_out)
 
     await translate_cache.set(cache_key, result)
     return result
@@ -569,7 +601,7 @@ async def cmd_game(update: Update, context) -> None:
                 detail_coro,
                 asyncio.wait_for(search_psprices(game_name), timeout=12),
                 search_psn_games(game_name),
-                match_psn_game(game_name),
+                match_psn_game(game_name, raw_query=query),
                 return_exceptions=True,
             )
             if isinstance(detail, Exception):     detail = None

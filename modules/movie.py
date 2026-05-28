@@ -8,12 +8,10 @@ Results cached for 1 hour per query string.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 import aiohttp
-from typing import Optional as _Optional
-
-import hashlib
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -22,6 +20,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 from bot.cache import movie_cache
 from bot.database import get_bot_config
 from bot.logger import get_logger
+from bot.router import registry
 
 log = get_logger(__name__)
 
@@ -30,7 +29,7 @@ _IMG_BASE = "https://image.tmdb.org/t/p/w500"
 _TMDB_URL = "https://www.themoviedb.org"
 
 
-async def _get_api_key(context) -> _Optional[str]:
+async def _get_api_key(context) -> Optional[str]:
     key = await get_bot_config("tmdb_api_key")
     if key:
         return key
@@ -43,7 +42,8 @@ async def _tmdb_get(path: str, api_key: str, **params) -> Optional[Dict]:
     params["api_key"] = api_key
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            async with session.get(url, params=params,
+                                   timeout=aiohttp.ClientTimeout(total=10)) as r:
                 if r.status != 200:
                     return None
                 return await r.json()
@@ -80,7 +80,7 @@ def _format_movie(item: Dict, media_type: str = "movie") -> str:
     return "\n".join(lines)
 
 
-async def search_tmdb(query: str, media_type: str, context) -> _Optional[list]:
+async def search_tmdb(query: str, media_type: str, context) -> Optional[list]:
     """Search TMDB and return a list of up to 5 result dicts, or None on error."""
     api_key = await _get_api_key(context)
     if not api_key:
@@ -98,48 +98,74 @@ async def search_tmdb(query: str, media_type: str, context) -> _Optional[list]:
     return results
 
 
-async def on_tmdb_button(update: Update, context) -> None:
-    """Show a different result when user taps a numbered button."""
-    query = update.callback_query
-    assert query
-    await query.answer()
+def _movie_select_keyboard(items: list, cache_key: str, media_type: str) -> InlineKeyboardMarkup:
+    rows: list = []
+    row: list = []
+    for i, item in enumerate(items[:5]):
+        title = (item.get("title") or item.get("name", "?"))[:18]
+        year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
+        label = f"{i+1}. {title}（{year}）" if year else f"{i+1}. {title}"
+        row.append(InlineKeyboardButton(label, callback_data=f"movie_sel:{media_type}:{cache_key}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
 
-    _, media_type, cache_key, idx_str = query.data.split(":", 3)
+
+async def on_movie_select(update: Update, context) -> None:
+    q = update.callback_query
+    assert q
+    await q.answer()
+
+    _, media_type, cache_key, idx_str = q.data.split(":", 3)
     idx = int(idx_str)
 
     results = await movie_cache.get(cache_key)
     if not results or idx >= len(results):
-        await query.edit_message_caption("Result no longer cached. Please search again.")
+        await q.edit_message_text("结果已过期，请重新搜索。")
         return
+
+    await q.edit_message_text("⏳ 加载中…", reply_markup=None)
 
     item = results[idx]
     text = _format_movie(item, media_type)
-    # Keep the same buttons but let user switch
-    buttons = []
-    for i, r in enumerate(results[1:4], start=2):
-        title = (r.get("title") or r.get("name", "?"))[:30]
-        year = (r.get("release_date") or r.get("first_air_date", ""))[:4]
-        label = f"{i}. {title} ({year})" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"tmdb:{media_type}:{cache_key}:{i-1}"))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
     poster = item.get("poster_path")
-    if poster and query.message and query.message.photo:
-        await query.edit_message_caption(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-    else:
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+    chat_id = q.message.chat_id if q.message else None
+
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
+    if poster and chat_id:
+        try:
+            await context.bot.send_photo(
+                chat_id, f"{_IMG_BASE}{poster}",
+                caption=text[:1024], parse_mode=ParseMode.HTML,
+            )
+            return
+        except Exception:
+            pass
+    if chat_id:
+        await context.bot.send_message(
+            chat_id, text, parse_mode=ParseMode.HTML, disable_web_page_preview=False,
+        )
 
 
 async def _cmd_search(update: Update, context, media_type: str) -> None:
     msg = update.effective_message
     if not context.args:
         label = "电影" if media_type == "movie" else "剧集"
-        await msg.reply_text(f"用法：/{media_type if media_type == 'movie' else 'tv'} <{label}名>")
+        cmd = "movie" if media_type == "movie" else "tv"
+        await msg.reply_text(f"用法：/{cmd} <{label}名>")
         return
     query = " ".join(context.args)
     status = await msg.reply_text("🔍 搜索中…")
     results = await search_tmdb(query, media_type, context)
     await status.delete()
+
     if results is None:
         await msg.reply_text("❌ TMDB API 未配置，请在 Web 面板 → 设置 中添加 TMDB API Key")
         return
@@ -150,25 +176,32 @@ async def _cmd_search(update: Update, context, media_type: str) -> None:
     short_key = hashlib.md5(f"{media_type}:{query.lower()}".encode()).hexdigest()[:16]
     await movie_cache.set(short_key, results)
 
-    item = results[0]
-    text = _format_movie(item, media_type)
-    buttons = []
-    for i, r in enumerate(results[1:4], start=2):
-        title = (r.get("title") or r.get("name", "?"))[:25]
-        year = (r.get("release_date") or r.get("first_air_date", ""))[:4]
-        label = f"{i}. {title}（{year}）" if year else f"{i}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"tmdb:{media_type}:{short_key}:{i-1}"))
-    keyboard = InlineKeyboardMarkup([buttons]) if buttons else None
-
-    poster = item.get("poster_path")
-    if poster:
-        await msg.reply_photo(
-            f"{_IMG_BASE}{poster}",
-            caption=text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-        )
+    if len(results) == 1:
+        item = results[0]
+        text = _format_movie(item, media_type)
+        poster = item.get("poster_path")
+        if poster:
+            try:
+                await msg.reply_photo(f"{_IMG_BASE}{poster}", caption=text[:1024],
+                                      parse_mode=ParseMode.HTML)
+                return
+            except Exception:
+                pass
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
     else:
-        await msg.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard,
-                              disable_web_page_preview=True)
+        emoji = "🎬" if media_type == "movie" else "📺"
+        lines = [f"{emoji} 搜到 <b>{len(results)}</b> 个结果，请选择：\n"]
+        for i, item in enumerate(results[:5]):
+            title = item.get("title") or item.get("name", "?")
+            year = (item.get("release_date") or item.get("first_air_date", ""))[:4]
+            rating = item.get("vote_average", 0)
+            line = f"{i+1}. <b>{title}</b>"
+            if year:    line += f" ({year})"
+            if rating:  line += f" · ⭐{rating:.1f}"
+            lines.append(line)
+        keyboard = _movie_select_keyboard(results, short_key, media_type)
+        await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                             reply_markup=keyboard)
 
 
 async def cmd_movie(update: Update, context) -> None:
@@ -180,7 +213,9 @@ async def cmd_tv(update: Update, context) -> None:
 
 
 def setup(application: Application) -> None:
-    application.add_handler(CallbackQueryHandler(on_tmdb_button, pattern=r"^tmdb:"))
+    registry.register_command("movie", cmd_movie, "搜索电影 <片名>")
+    registry.register_command("tv", cmd_tv, "搜索剧集 <剧名>")
+    application.add_handler(CallbackQueryHandler(on_movie_select, pattern=r"^movie_sel:"))
     application.add_handler(CommandHandler("movie", cmd_movie))
     application.add_handler(CommandHandler("tv", cmd_tv))
     log.info("movie module loaded")

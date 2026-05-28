@@ -163,7 +163,20 @@ class PsnLibraryGame(Base):
     streaming    = Column(Boolean, default=False)
     region       = Column(String(8), default="HK")
     note         = Column(Text, nullable=True)
+    extra_data   = Column(Text, nullable=True, default="{}")     # user-defined JSON fields
     created_at   = Column(DateTime, default=datetime.utcnow)
+
+
+class PsnColumnsConfig(Base):
+    """User-configurable column definitions for the PS Library web UI."""
+    __tablename__ = "psn_columns_config"
+
+    col_key      = Column(String(64), primary_key=True)
+    display_name = Column(Text, nullable=False)
+    col_type     = Column(String(16), default="text")   # text|number|date|url|badge|image
+    is_core      = Column(Boolean, default=False)        # True = fixed DB column
+    visible      = Column(Boolean, default=True)
+    sort_order   = Column(Integer, default=100)
 
 
 # ---------------------------------------------------------------------------
@@ -180,12 +193,13 @@ async def _migrate(conn) -> None:
 
     # Columns added after v1 — (table, column, definition)
     migrations = [
-        ("group_settings", "is_active",       "BOOLEAN NOT NULL DEFAULT 0"),
-        ("group_settings", "welcome_text",     "TEXT"),
-        ("group_settings", "goodbye_text",     "TEXT"),
-        ("group_settings", "dlmode_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
-        ("group_settings", "aichat_enabled",   "BOOLEAN NOT NULL DEFAULT 1"),
-        ("group_settings", "rules_text",       "TEXT"),
+        ("group_settings",    "is_active",     "BOOLEAN NOT NULL DEFAULT 0"),
+        ("group_settings",    "welcome_text",  "TEXT"),
+        ("group_settings",    "goodbye_text",  "TEXT"),
+        ("group_settings",    "dlmode_enabled","BOOLEAN NOT NULL DEFAULT 1"),
+        ("group_settings",    "aichat_enabled","BOOLEAN NOT NULL DEFAULT 1"),
+        ("group_settings",    "rules_text",    "TEXT"),
+        ("psn_library_games", "extra_data",    "TEXT DEFAULT '{}'"),
     ]
 
     for table, col, definition in migrations:
@@ -196,6 +210,39 @@ async def _migrate(conn) -> None:
             log.info("DB migration: added column", table=table, column=col)
 
 
+_DEFAULT_COLUMNS = [
+    ("cover_url",    "封面",           "image",  True,   True,   5),
+    ("title_zh",     "中文名",          "text",   True,   True,   10),
+    ("title_en",     "英文名",          "text",   True,   True,   20),
+    ("tier",         "档位",           "badge",  True,   True,   30),
+    ("platforms",    "平台",           "text",   True,   True,   40),
+    ("status",       "状态",           "badge",  True,   True,   50),
+    ("entry_date",   "入库日期",        "date",   True,   True,   60),
+    ("exit_date",    "出库日期",        "date",   True,   False,  70),
+    ("store_url",    "PS Store 链接",   "url",    True,   True,   80),
+    ("product_id",   "Product ID",     "text",   True,   False,  90),
+    ("note",         "备注",           "text",   True,   True,   100),
+]
+
+
+async def _seed_default_columns() -> None:
+    """Insert default column definitions on first run (skips if already exist)."""
+    async with get_session() as s:
+        existing = await s.execute(select(PsnColumnsConfig))
+        if existing.scalars().first():
+            return
+        for col_key, display_name, col_type, is_core, visible, sort_order in _DEFAULT_COLUMNS:
+            s.add(PsnColumnsConfig(
+                col_key=col_key,
+                display_name=display_name,
+                col_type=col_type,
+                is_core=is_core,
+                visible=visible,
+                sort_order=sort_order,
+            ))
+        await s.commit()
+
+
 async def init_db(database_url: str) -> None:
     """Create engine, session factory, and all tables."""
     global _engine, _session_factory
@@ -204,6 +251,7 @@ async def init_db(database_url: str) -> None:
     async with _engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate(conn)
+    await _seed_default_columns()
     log.info("Database initialised", url=database_url)
 
 
@@ -672,10 +720,12 @@ async def upsert_psn_game(
         return row
 
 
-async def match_psn_game(en_name: str) -> Optional[PsnLibraryGame]:
-    """Exact then fuzzy match on title_en; returns best row (lowest tier first)."""
+async def match_psn_game(en_name: str, raw_query: str = "") -> Optional[PsnLibraryGame]:
+    """Match a game by English name (exact → fuzzy → nospace) then by raw_query on title_zh."""
+    from sqlalchemy import text as _text
+
     async with get_session() as s:
-        # Exact match first
+        # 1. Exact match
         result = await s.execute(
             select(PsnLibraryGame)
             .where(func.lower(PsnLibraryGame.title_en) == en_name.lower())
@@ -685,7 +735,8 @@ async def match_psn_game(en_name: str) -> Optional[PsnLibraryGame]:
         row = result.scalars().first()
         if row:
             return row
-        # Fuzzy match
+
+        # 2. LIKE %en_name%
         kw = f"%{en_name}%"
         result = await s.execute(
             select(PsnLibraryGame)
@@ -693,13 +744,130 @@ async def match_psn_game(en_name: str) -> Optional[PsnLibraryGame]:
             .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
             .limit(1)
         )
-        return result.scalars().first()
+        row = result.scalars().first()
+        if row:
+            return row
+
+        # 3. No-space variant (handles "WuchangFallenFeathers" vs "Wuchang: Fallen Feathers")
+        no_space = en_name.replace(" ", "").replace(":", "").lower()
+        if len(no_space) >= 4:
+            result = await s.execute(
+                select(PsnLibraryGame)
+                .where(_text(
+                    "LOWER(REPLACE(REPLACE(title_en,' ',''),':','')) LIKE :nsp"
+                ).bindparams(nsp=f"%{no_space}%"))
+                .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
+                .limit(1)
+            )
+            row = result.scalars().first()
+            if row:
+                return row
+
+        # 4. Raw query (CJK input) matched against title_zh
+        rq = (raw_query or "").strip()
+        if rq and rq != en_name:
+            rq_kw = f"%{rq}%"
+            result = await s.execute(
+                select(PsnLibraryGame)
+                .where(PsnLibraryGame.title_zh.ilike(rq_kw))
+                .order_by(PsnLibraryGame.tier, PsnLibraryGame.entry_date.desc())
+                .limit(1)
+            )
+            row = result.scalars().first()
+            if row:
+                return row
+
+        return None
 
 
 async def delete_psn_game(game_id: int) -> bool:
     async with get_session() as s:
         row = await s.get(PsnLibraryGame, game_id)
         if not row:
+            return False
+        await s.delete(row)
+        await s.commit()
+        return True
+
+
+async def patch_psn_game_cell(game_id: int, field: str, value: str) -> bool:
+    """Update a single field on a game row. Extra (non-core) fields go into extra_data JSON."""
+    import json as _json
+    core_fields = {c.key for c in PsnLibraryGame.__table__.columns} - {"id", "created_at"}
+    async with get_session() as s:
+        row = await s.get(PsnLibraryGame, game_id)
+        if not row:
+            return False
+        if field in core_fields:
+            # Type coercions for core columns
+            if field in ("tier",):
+                setattr(row, field, int(value) if value.strip().isdigit() else 2)
+            elif field in ("entry_date", "exit_date", "release_date"):
+                from datetime import date as _date
+                try:
+                    setattr(row, field, _date.fromisoformat(value) if value else None)
+                except ValueError:
+                    setattr(row, field, None)
+            elif field == "streaming":
+                setattr(row, field, value.lower() in ("1", "true", "yes"))
+            else:
+                setattr(row, field, value if value else None)
+        else:
+            # Store in extra_data JSON
+            try:
+                extra = _json.loads(row.extra_data or "{}")
+            except Exception:
+                extra = {}
+            extra[field] = value
+            row.extra_data = _json.dumps(extra, ensure_ascii=False)
+        await s.commit()
+        return True
+
+
+# ---------------------------------------------------------------------------
+# PsnColumnsConfig helpers
+# ---------------------------------------------------------------------------
+
+async def get_psn_columns() -> List[PsnColumnsConfig]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(PsnColumnsConfig).order_by(PsnColumnsConfig.sort_order, PsnColumnsConfig.col_key)
+        )
+        return list(result.scalars().all())
+
+
+async def upsert_psn_column(
+    col_key: str,
+    display_name: str,
+    col_type: str = "text",
+    is_core: bool = False,
+    visible: bool = True,
+    sort_order: int = 100,
+) -> PsnColumnsConfig:
+    async with get_session() as s:
+        row = await s.get(PsnColumnsConfig, col_key)
+        if row:
+            row.display_name = display_name
+            row.col_type = col_type
+            row.visible = visible
+            row.sort_order = sort_order
+        else:
+            row = PsnColumnsConfig(
+                col_key=col_key, display_name=display_name,
+                col_type=col_type, is_core=is_core,
+                visible=visible, sort_order=sort_order,
+            )
+            s.add(row)
+        await s.commit()
+        await s.refresh(row)
+        return row
+
+
+async def delete_psn_column(col_key: str) -> bool:
+    """Delete a non-core custom column."""
+    async with get_session() as s:
+        row = await s.get(PsnColumnsConfig, col_key)
+        if not row or row.is_core:
             return False
         await s.delete(row)
         await s.commit()

@@ -3,7 +3,7 @@ Book search module — powered by Google Books API.
 
 Accessible via:
   @bot book <query>  — inline picker (up to 5 results with thumbnails)
-  /book <query>      — direct command (cover art + navigation buttons)
+  /book <query>      — selection-first command (cover art + selection list)
 
 No API key required (up to 1000 req/day per IP).
 Results cached 1 hour per query.
@@ -49,9 +49,7 @@ def get_cover_url(item: Dict) -> Optional[str]:
     url = links.get("thumbnail") or links.get("smallThumbnail")
     if not url:
         return None
-    # Google Books returns HTTP; Telegram/PTB needs HTTPS
     url = url.replace("http://", "https://")
-    # zoom=1 is tiny; zoom=0 is front-cover size
     url = url.replace("zoom=1", "zoom=0")
     return url
 
@@ -102,22 +100,6 @@ def _format_book(item: Dict) -> str:
     return "\n".join(lines)
 
 
-def _book_keyboard(items: list, current_idx: int, cache_key: str) -> Optional[InlineKeyboardMarkup]:
-    """Row of buttons for switching results, excluding the one currently shown."""
-    buttons = []
-    for i, r in enumerate(items[:5]):
-        if i == current_idx:
-            continue
-        info = r.get("volumeInfo", {})
-        title = info.get("title", "?")[:20]
-        year = info.get("publishedDate", "")[:4]
-        label = f"{i+1}. {title}（{year}）" if year else f"{i+1}. {title}"
-        buttons.append(InlineKeyboardButton(label, callback_data=f"book:{cache_key}:{i}"))
-        if len(buttons) >= 3:
-            break
-    return InlineKeyboardMarkup([buttons]) if buttons else None
-
-
 async def search_books(query: str) -> list:
     """Search books; returns up to 5 result dicts or empty list."""
     cache_key = f"book:{query.lower()}"
@@ -130,7 +112,24 @@ async def search_books(query: str) -> list:
     return items or []
 
 
-async def on_book_button(update: Update, context) -> None:
+def _book_select_keyboard(items: list, cache_key: str) -> InlineKeyboardMarkup:
+    rows: list = []
+    row: list = []
+    for i, item in enumerate(items[:5]):
+        info = item.get("volumeInfo", {})
+        title = info.get("title", "?")[:18]
+        year = info.get("publishedDate", "")[:4]
+        label = f"{i+1}. {title}（{year}）" if year else f"{i+1}. {title}"
+        row.append(InlineKeyboardButton(label, callback_data=f"book_sel:{cache_key}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def on_book_select(update: Update, context) -> None:
     q = update.callback_query
     assert q
     await q.answer()
@@ -143,19 +142,31 @@ async def on_book_button(update: Update, context) -> None:
         await q.edit_message_text("结果已过期，请重新搜索。")
         return
 
+    await q.edit_message_text("⏳ 加载中…", reply_markup=None)
+
     item = items[idx]
     text = _format_book(item)
-    keyboard = _book_keyboard(items, idx, cache_key)
+    cover = get_cover_url(item)
+    chat_id = q.message.chat_id if q.message else None
 
-    if q.message and q.message.photo:
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
+    if cover and chat_id:
         try:
-            await q.edit_message_caption(text[:1024], parse_mode=ParseMode.HTML,
-                                         reply_markup=keyboard)
+            await context.bot.send_photo(
+                chat_id, cover,
+                caption=text[:1024], parse_mode=ParseMode.HTML,
+            )
+            return
         except Exception:
             pass
-    else:
-        await q.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                  reply_markup=keyboard, disable_web_page_preview=True)
+    if chat_id:
+        await context.bot.send_message(
+            chat_id, text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
 
 
 async def cmd_book(update: Update, context) -> None:
@@ -176,23 +187,35 @@ async def cmd_book(update: Update, context) -> None:
     short_key = hashlib.md5(f"book:{query.lower()}".encode()).hexdigest()[:16]
     await book_cache.set(short_key, items)
 
-    text = _format_book(items[0])
-    keyboard = _book_keyboard(items, 0, short_key)
-    cover = get_cover_url(items[0])
-
-    if cover:
-        try:
-            await msg.reply_photo(cover, caption=text[:1024],
-                                  parse_mode=ParseMode.HTML, reply_markup=keyboard)
-            return
-        except Exception:
-            pass
-    await msg.reply_text(text, parse_mode=ParseMode.HTML,
-                         reply_markup=keyboard, disable_web_page_preview=True)
+    if len(items) == 1:
+        text = _format_book(items[0])
+        cover = get_cover_url(items[0])
+        if cover:
+            try:
+                await msg.reply_photo(cover, caption=text[:1024],
+                                      parse_mode=ParseMode.HTML)
+                return
+            except Exception:
+                pass
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    else:
+        lines = [f"📚 搜到 <b>{len(items)}</b> 本书，请选择：\n"]
+        for i, item in enumerate(items[:5]):
+            info = item.get("volumeInfo", {})
+            title = info.get("title", "?")
+            authors = ", ".join(info.get("authors", []))[:20]
+            year = info.get("publishedDate", "")[:4]
+            line = f"{i+1}. <b>{title}</b>"
+            if authors: line += f" — {authors}"
+            if year:    line += f" ({year})"
+            lines.append(line)
+        keyboard = _book_select_keyboard(items, short_key)
+        await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML,
+                             reply_markup=keyboard)
 
 
 def setup(application: Application) -> None:
     registry.register_command("book", cmd_book, "搜索书籍 <书名>")
-    application.add_handler(CallbackQueryHandler(on_book_button, pattern=r"^book:"))
+    application.add_handler(CallbackQueryHandler(on_book_select, pattern=r"^book_sel:"))
     application.add_handler(CommandHandler("book", cmd_book))
     log.info("book module loaded")
