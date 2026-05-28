@@ -397,23 +397,29 @@ async def _bili_direct_parse(
 
 
 # ---------------------------------------------------------------------------
-# XHS direct image downloader
+# XHS direct downloader (images + video)
 # ---------------------------------------------------------------------------
 
-async def _xhs_download_images(
+async def _xhs_download_media(
     result,
     cookie: Optional[str],
     proxy: Optional[str],
     tmp_dir: str,
 ) -> list[Path]:
     """
-    Download all images from a parsed XHS result directly.
+    Download all media (images OR video) from a parsed XHS result.
 
-    parsehub's generic download fails for XHS because the CDN requires the
-    Referer header and (for restricted posts) a login cookie.  We pull the
-    image URLs from result.media and download them ourselves.
+    parsehub's Media class stores the remote URL in `.path`, not `.url`.
+    For video posts parsehub returns a single Video item; for image posts
+    it returns a list of Image items.  Both need Referer + optional cookie
+    for the XHS CDN to serve the real content.
     """
     import httpx
+
+    try:
+        from parsehub.types.media import Video as _PHVideo
+    except ImportError:
+        _PHVideo = None
 
     media = getattr(result, "media", None)
     if not media:
@@ -425,37 +431,53 @@ async def _xhs_download_images(
         headers["Cookie"] = cookie
 
     files: list[Path] = []
+
+    # Separate timeout for video (larger files, longer read window)
+    img_timeout   = httpx.Timeout(15.0, read=60.0)
+    video_timeout = httpx.Timeout(20.0, read=300.0)
+
     async with httpx.AsyncClient(
         headers=headers,
         proxy=proxy,
-        timeout=httpx.Timeout(15.0, read=60.0),
         follow_redirects=True,
     ) as client:
         for i, m in enumerate(items):
-            img_url = (
-                getattr(m, "url", None)
-                or getattr(m, "thumb_url", None)
-            )
-            if not img_url:
+            # parsehub stores the CDN URL in .path; .url does not exist
+            media_url = getattr(m, "path", None)
+            if not media_url or not str(media_url).startswith("http"):
                 continue
+
+            is_video = _PHVideo is not None and isinstance(m, _PHVideo)
+            timeout  = video_timeout if is_video else img_timeout
+
             try:
-                resp = await client.get(img_url)
-                resp.raise_for_status()
-                ct = resp.headers.get("content-type", "")
-                if "webp" in ct:
-                    ext = ".webp"
-                elif "png" in ct:
-                    ext = ".png"
-                elif "gif" in ct:
-                    ext = ".gif"
-                else:
-                    ext = ".jpg"
-                out = Path(tmp_dir) / f"xhs_{i:03d}{ext}"
-                out.write_bytes(resp.content)
+                async with client.stream("GET", str(media_url), timeout=timeout) as resp:
+                    resp.raise_for_status()
+                    ct = resp.headers.get("content-type", "")
+
+                    if is_video or "video" in ct or "mp4" in ct:
+                        ext = ".mp4"
+                    elif "webp" in ct:
+                        ext = ".webp"
+                    elif "png" in ct:
+                        ext = ".png"
+                    elif "gif" in ct:
+                        ext = ".gif"
+                    else:
+                        ext = ".jpg"
+
+                    out = Path(tmp_dir) / f"xhs_{i:03d}{ext}"
+                    with open(out, "wb") as f:
+                        async for chunk in resp.aiter_bytes(131072):
+                            f.write(chunk)
+
+                size_mb = out.stat().st_size / 1024 / 1024
+                log.debug("XHS media downloaded", index=i, ext=ext,
+                          size_mb=round(size_mb, 1))
                 files.append(out)
-                log.debug("XHS image downloaded", index=i, size=len(resp.content))
             except Exception as e:
-                log.warning("XHS image download failed", index=i, url=img_url[:80], error=str(e))
+                log.warning("XHS media download failed", index=i,
+                            url=str(media_url)[:80], error=str(e))
 
     log.info("XHS direct download", total=len(items), saved=len(files))
     return files
@@ -665,16 +687,16 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         files: list[Path] = []
         if is_xhs:
-            # XHS CDN requires Referer + cookie; download images directly.
-            files = await _xhs_download_images(result, cookie, proxy, tmp_dir)
+            # XHS CDN requires Referer + cookie; download media directly.
+            files = await _xhs_download_media(result, cookie, proxy, tmp_dir)
             if not files:
-                # Fallback: let parsehub try (rarely works but worth attempting)
+                # Fallback: let parsehub try its own downloader
                 try:
                     dr = await asyncio.wait_for(
-                        result.download(path=tmp_dir, proxy=proxy),
+                        result.download(path=tmp_dir, proxies=proxy),
                         timeout=180,
                     )
-                    files = _get_files(dr, skip_video_path=True)
+                    files = _get_files(dr, skip_video_path=False)
                 except (asyncio.TimeoutError, Exception) as e:
                     log.warning("XHS parsehub fallback download also failed", url=url, error=str(e))
         else:
