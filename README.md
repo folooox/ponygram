@@ -44,8 +44,9 @@ Copy `.env.example` → `.env`:
 | `WEB_HOST` | — | Bind host (default `0.0.0.0`) |
 | `WEB_PORT` | — | Web Admin port (default `8080`) |
 
-> **API Keys** (Claude, TMDB, Last.fm, RAWG, PSN) are **not** set in `.env`.
+> **API Keys** (Claude, TMDB, Last.fm, RAWG) are **not** set in `.env`.
 > Configure them in **Web Admin → Settings** after the bot starts — no restart needed.
+> Platform **cookies** (Instagram, Bilibili, etc.) are configured in **Web Admin → Media**.
 
 ---
 
@@ -121,46 +122,6 @@ a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2
 
 ---
 
-### 🕹️ PSN NPSSO Token
-
-**Used for:** `/psn <id>` (user profile, trophy level, platinum count) and `/trophy <id> <game>`
-
-The NPSSO is a long-lived session cookie from your PlayStation Network account. The bot automatically exchanges it for short-lived API tokens (valid 1h, refreshed silently).
-
-**Step-by-step:**
-
-**Step 1** — Log in to PSN in your browser:
-```
-https://store.playstation.com
-```
-
-**Step 2** — In the same browser, open a new tab and navigate to:
-```
-https://ca.account.sony.com/api/v1/ssocookie
-```
-
-**Step 3** — You will see a raw JSON response:
-```json
-{"npsso":"Abcdefghijklmnopqrstuvwxyz123456ABCDEFGHIJKLMNOPQRSTUVWXYZ789012"}
-```
-
-**Step 4** — Copy only the value (64 characters between the quotes, without the quotes).
-
-**Step 5** — Paste into **Web Admin → Settings → PSN NPSSO Token** → Save.
-
-**Format:** 64 alphanumeric characters, mixed case
-```
-Abcdefghijklmnopqrstuvwxyz123456ABCDEFGHIJKLMNOPQRSTUVWXYZ789012
-```
-
-**⚠️ Notes:**
-- Expires after ~2 months or when you sign out of PSN on any device
-- If `/psn` stops working, repeat the steps to get a fresh token and paste it again
-- The bot only **reads** data — it never modifies your PSN account
-- Use your own PSN account's NPSSO (it's tied to your login session)
-
----
-
 ### 🍪 Platform Cookies (media parsing)
 
 **Used for:** downloading restricted content from Instagram, Twitter/X, Bilibili, 抖音, etc.
@@ -174,7 +135,7 @@ Without cookies, many platforms block anonymous requests. Cookies let the bot ac
 3. Click the Cookie-Editor icon in your toolbar
 4. Click **Export** → **Header String**
 5. Copy the result (it looks like: `sessionid=abc123; csrftoken=xyz456; ds_user_id=789...`)
-6. Paste into **Web Admin → Settings** → the corresponding platform field
+6. Paste into **Web Admin → Media** → click the 🔑 key icon next to the platform
 
 **Supported:** Instagram · Twitter/X · Bilibili · 抖音 · TikTok · 快手 · 小红书 · YouTube
 
@@ -223,9 +184,8 @@ Requires `claude_api_key` in Web Admin → Settings.
 
 | Command | Requires | Description |
 |---|---|---|
-| `/psn <psn_id>` | PSN NPSSO | User profile (trophy level, platinums, recent games) |
-| `/trophy <psn_id> <game>` | PSN NPSSO | Trophy progress for a game |
-| `/psprice <title>` | — | PS Store price + history low (US + CN via PSPrices.com) |
+| `/game <title>` | RAWG Key | PS4/PS5 game info — developer, ratings, genres, HK price, PS Plus status |
+| `/psprice <title>` | — | PS Store HK price + history low |
 
 ### 🔍 Inline Search (`@bot <prefix> <query>`)
 
@@ -238,8 +198,7 @@ Type in any chat:
 | `book <query>` | — | Google Books |
 | `music <artist - track>` | Last.fm Key | Track search |
 | `artist <name>` | Last.fm Key | Artist info + top tracks |
-| `game <title>` | RAWG Key | PS4/PS5 game search |
-| `psn <psn_id>` | PSN NPSSO | PSN user profile card |
+| `game <title>` | RAWG Key | PS4/PS5 game search with cover, rating, Metacritic |
 
 ---
 
@@ -261,7 +220,9 @@ WEB_PORT=8080
 | `/groups/<id>` | Group settings (toggles, thresholds, welcome/goodbye/rules text) |
 | `/blacklist` | Global ban list |
 | `/rss` | RSS subscriptions across all chats |
-| `/settings` | API keys + PSN token + platform cookies (with inline help for each) |
+| `/media` | Media parsing — per-platform cookie config + URL debugger (17 platforms) |
+| `/settings` | API keys (Claude, TMDB, Last.fm, RAWG) with inline key verification |
+| `/psn-library` | PS Plus game library (CRUD + bulk CSV import) |
 
 ### Service Health Panel (Dashboard)
 
@@ -312,7 +273,7 @@ ponygram/
 │   ├── media.py            # yt-dlp / ParseHub media download
 │   ├── ai_chat.py          # Claude AI dialogue
 │   ├── inline.py           # @bot inline queries
-│   ├── psn.py              # PS game search, PSN profile, trophies
+│   ├── psn.py              # PS game search (/game), HK price (/psprice), RAWG integration
 │   └── cookie_manager.py   # Platform cookie auto-refresh
 ├── web/
 │   ├── app.py              # FastAPI web admin (all routes)

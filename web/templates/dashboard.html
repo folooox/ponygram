@@ -77,7 +77,7 @@
         </div>
         <div id="health-grid">
           {# Skeleton rows shown before JS loads #}
-          {% for i in range(7) %}
+          {% for i in range(6) %}
           <div class="d-flex align-items-center py-2 border-bottom border-secondary border-opacity-25">
             <div class="placeholder-glow flex-grow-1">
               <span class="placeholder col-6" style="height:.85rem;border-radius:4px"></span>
@@ -141,7 +141,6 @@ const SERVICE_META = {
   tmdb:     { icon: "bi-film",            color: "#01b4e4", label: "TMDB (movie/TV)" },
   lastfm:   { icon: "bi-music-note-beamed", color: "#d51007", label: "Last.fm (music)" },
   rawg:     { icon: "bi-controller",      color: "#f59e0b", label: "RAWG.io (PS games)" },
-  psn:      { icon: "bi-person-badge",    color: "#0070d1", label: "PSN (trophies)" },
   ytdlp:    { icon: "bi-download",        color: "#22c55e", label: "yt-dlp (media)" },
 };
 
@@ -150,7 +149,6 @@ const SETUP_URLS = {
   tmdb:   "https://www.themoviedb.org/settings/api",
   lastfm: "https://www.last.fm/api/account/create",
   rawg:   "https://rawg.io/apidocs",
-  psn:    "https://ca.account.sony.com/api/v1/ssocookie",
   ytdlp:  "https://github.com/yt-dlp/yt-dlp",
 };
 
@@ -223,7 +221,7 @@ async function loadHealth() {
 
 function renderGrid() {
   const grid = document.getElementById("health-grid");
-  const order = ["telegram","claude","tmdb","lastfm","rawg","psn","ytdlp"];
+  const order = ["telegram","claude","tmdb","lastfm","rawg","ytdlp"];
   grid.innerHTML = order
     .filter(k => _healthData[k])
     .map(k => renderRow(k, _healthData[k], null))
