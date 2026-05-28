@@ -220,7 +220,9 @@ WEB_PORT=8080
 | `/groups/<id>` | Group settings (toggles, thresholds, welcome/goodbye/rules text) |
 | `/blacklist` | Global ban list |
 | `/rss` | RSS subscriptions across all chats |
-| `/settings` | API keys + PSN token + platform cookies (with inline help for each) |
+| `/media` | Media parsing — per-platform cookie config + URL debugger (17 platforms) |
+| `/settings` | API keys (Claude, TMDB, Last.fm, RAWG) with inline key verification |
+| `/psn-library` | PS Plus game library (CRUD + bulk CSV import) |
 
 ### Service Health Panel (Dashboard)
 
@@ -271,7 +273,7 @@ ponygram/
 │   ├── media.py            # yt-dlp / ParseHub media download
 │   ├── ai_chat.py          # Claude AI dialogue
 │   ├── inline.py           # @bot inline queries
-│   ├── psn.py              # PS game search, PSN profile, trophies
+│   ├── psn.py              # PS game search (/game), HK price (/psprice), RAWG integration
 │   └── cookie_manager.py   # Platform cookie auto-refresh
 ├── web/
 │   ├── app.py              # FastAPI web admin (all routes)
