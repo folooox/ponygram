@@ -108,3 +108,11 @@ def setup(application: Application) -> None:
 - When adding a new DB column, add it to the ORM model **and** to the `migrations` list in `database.py:_migrate()`.
 - The `bot_config` table is the single source of truth for all runtime-configurable secrets. Do not hardcode fallback key values.
 - `ffmpeg` is required (installed in Docker) for media processing via yt-dlp.
+
+## PR & Merge Workflow
+
+- Claude always develops on the session-assigned branch (shown in the system prompt).
+- A draft PR is created automatically on first push and updated on each subsequent push.
+- **Use regular merge (not squash) when merging Claude's PRs.** Squash merge causes the branch to diverge from main, so the next PR's diff will re-show already-merged commits.
+- After a PR is merged, the next push from Claude automatically opens a new PR for that branch.
+- To get one PR per task instead of per session, start a new Claude Code web session — each session gets its own unique branch suffix.
