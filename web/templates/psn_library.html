@@ -2,39 +2,53 @@
 {% block title %}PS Library — Ponygram Admin{% endblock %}
 
 {% block content %}
+<!-- ============================================================
+     Header
+     ============================================================ -->
 <div class="d-flex align-items-center mb-3 flex-wrap gap-2">
   <h4 class="fw-bold mb-0">PS Library</h4>
   <span class="badge bg-secondary ms-1">{{ total }}</span>
-  <button class="btn btn-sm btn-primary ms-auto" data-bs-toggle="modal" data-bs-target="#gameModal" onclick="openAdd()">
-    <i class="bi bi-plus-lg me-1"></i>新增
-  </button>
+  <div class="ms-auto d-flex gap-2">
+    <button class="btn btn-sm btn-outline-secondary" type="button"
+            data-bs-toggle="offcanvas" data-bs-target="#colConfigPanel">
+      <i class="bi bi-layout-three-columns me-1"></i>列配置
+    </button>
+    <button class="btn btn-sm btn-primary" onclick="addEmptyRow()">
+      <i class="bi bi-plus-lg me-1"></i>新增行
+    </button>
+  </div>
 </div>
 
-{% if msg == 'added' %}<div class="alert alert-success py-2 small">已添加。</div>
-{% elif msg == 'saved' %}<div class="alert alert-success py-2 small">已保存。</div>
-{% elif msg == 'deleted' %}<div class="alert alert-info py-2 small">已删除。</div>
-{% elif msg == 'notfound' %}<div class="alert alert-warning py-2 small">未找到该条目。</div>
-{% endif %}
+<!-- ============================================================
+     Alert banner
+     ============================================================ -->
+<div id="saveBanner" class="alert alert-success py-2 small" style="display:none"></div>
 
-<!-- Filter bar -->
-<form method="get" class="row g-2 mb-3 align-items-end">
+<!-- ============================================================
+     Filter bar
+     ============================================================ -->
+<form method="get" class="row g-2 mb-3 align-items-end" id="filterForm">
   <div class="col-auto">
-    <select name="tier" class="form-select form-select-sm bg-dark border-secondary text-light">
-      <option value="">&#x1F3AE; 全部档位</option>
+    <select name="tier" class="form-select form-select-sm"
+            onchange="this.form.submit()">
+      <option value="">全部档位</option>
       <option value="1" {% if filter_tier == 1 %}selected{% endif %}>1档 Essential</option>
       <option value="2" {% if filter_tier == 2 %}selected{% endif %}>2档 Extra</option>
       <option value="3" {% if filter_tier == 3 %}selected{% endif %}>3档 Premium</option>
     </select>
   </div>
   <div class="col-auto">
-    <select name="status" class="form-select form-select-sm bg-dark border-secondary text-light">
+    <select name="status" class="form-select form-select-sm"
+            onchange="this.form.submit()">
       <option value="">全部状态</option>
-      <option value="active" {% if filter_status == 'active' %}selected{% endif %}>在库</option>
-      <option value="removed" {% if filter_status == 'removed' %}selected{% endif %}>已出库</option>
+      <option value="active"   {% if filter_status == 'active'   %}selected{% endif %}>在库</option>
+      <option value="removed"  {% if filter_status == 'removed'  %}selected{% endif %}>已出库</option>
     </select>
   </div>
   <div class="col">
-    <input type="text" name="q" value="{{ filter_q }}" class="form-control form-control-sm bg-dark border-secondary text-light" placeholder="搜索游戏名称…">
+    <input type="text" name="q" value="{{ filter_q }}"
+           class="form-control form-control-sm"
+           placeholder="搜索游戏名称…">
   </div>
   <div class="col-auto">
     <button type="submit" class="btn btn-sm btn-outline-secondary">筛选</button>
@@ -44,117 +58,134 @@
   </div>
 </form>
 
-<!-- Games table -->
-<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
-  <div class="table-responsive">
-    <table class="table table-dark table-hover mb-0" style="background:transparent">
-      <thead>
-        <tr class="text-secondary small">
-          <th style="width:70px">封面</th>
-          <th>名称</th>
-          <th>档位</th>
-          <th>平台</th>
-          <th>入库日</th>
-          <th>出库日</th>
-          <th>状态</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% if not games %}
-        <tr><td colspan="8" class="text-center text-secondary py-4">暂无数据</td></tr>
+<!-- ============================================================
+     Spreadsheet table
+     ============================================================ -->
+<div class="table-responsive mb-3" style="border-radius:.6rem;overflow:hidden;border:1px solid var(--bs-border-color)">
+  <table class="table table-hover table-sm mb-0 align-middle" id="gamesTable" style="min-width:700px">
+    <thead class="table-dark">
+      <tr>
+        <!-- Cover always first (non-editable via column loop) -->
+        <th style="width:66px">封面</th>
+        {% for col in columns %}
+        {% if col.visible and col.col_key != 'cover_url' %}
+        <th class="col-header" data-col="{{ col.col_key }}" style="white-space:nowrap;min-width:90px">
+          {{ col.display_name }}
+        </th>
         {% endif %}
-        {% for g in games %}
-        <tr>
-          <td>
-            {% if g.cover_url %}
-            <img src="{{ g.cover_url }}" style="width:60px;height:38px;object-fit:cover;border-radius:4px" loading="lazy" onerror="this.style.display='none'">
-            {% else %}
-            <div style="width:60px;height:38px;background:#2a2f45;border-radius:4px;display:flex;align-items:center;justify-content:center">
-              <i class="bi bi-controller text-secondary small"></i>
-            </div>
-            {% endif %}
-          </td>
-          <td>
-            <div class="fw-semibold small">{{ g.title_en }}</div>
-            {% if g.title_zh %}<div class="text-secondary" style="font-size:.75rem">{{ g.title_zh }}</div>{% endif %}
-            {% if g.concept_id %}<div class="text-secondary font-monospace" style="font-size:.7rem">{{ g.concept_id }}</div>{% endif %}
-          </td>
-          <td>
-            {% if g.tier == 1 %}<span class="badge bg-secondary">1档</span>
-            {% elif g.tier == 2 %}<span class="badge bg-info text-dark">2档 Extra</span>
-            {% elif g.tier == 3 %}<span class="badge" style="background:#7c3aed">3档 Premium</span>
-            {% endif %}
-          </td>
-          <td class="small text-secondary">{{ g.platforms or "—" }}</td>
-          <td class="small text-secondary">{{ g.entry_date.strftime("%Y-%m-%d") if g.entry_date else "—" }}</td>
-          <td class="small text-secondary">{{ g.exit_date.strftime("%Y-%m-%d") if g.exit_date else "—" }}</td>
-          <td>
-            {% if g.status == 'active' %}<span class="badge bg-success">在库</span>
-            {% else %}<span class="badge bg-secondary">已出库</span>{% endif %}
-          </td>
-          <td class="text-end" style="white-space:nowrap">
-            <button class="btn btn-sm btn-outline-primary me-1"
-              onclick="openEdit({
-                id:{{ g.id }},
-                title_en:{{ g.title_en | tojson }},
-                title_zh:{{ (g.title_zh or '') | tojson }},
-                concept_id:'{{ g.concept_id or "" }}',
-                product_id:{{ (g.product_id or '') | tojson }},
-                store_url:{{ (g.store_url or '') | tojson }},
-                cover_url:{{ (g.cover_url or '') | tojson }},
-                release_date:'{{ g.release_date.isoformat() if g.release_date else "" }}',
-                entry_date:'{{ g.entry_date.isoformat() if g.entry_date else "" }}',
-                exit_date:'{{ g.exit_date.isoformat() if g.exit_date else "" }}',
-                tier:{{ g.tier }},
-                status:'{{ g.status }}',
-                ps4:{{ 'true' if g.platforms and 'PS4' in g.platforms else 'false' }},
-                ps5:{{ 'true' if g.platforms and 'PS5' in g.platforms else 'false' }},
-                genre:{{ (g.genre or '') | tojson }},
-                age_rating:{{ (g.age_rating or '') | tojson }},
-                streaming:{{ 'true' if g.streaming else 'false' }},
-                region:'{{ g.region }}',
-                note:{{ (g.note or '') | tojson }}
-              })">
-              <i class="bi bi-pencil"></i>
-            </button>
-            <form method="post" action="/psn-library/{{ g.id }}/delete" class="d-inline">
-              <button type="submit" class="btn btn-sm btn-outline-danger"
-                      onclick="return confirm('删除 {{ g.title_en | replace("'", "\\'"  ) }}？')"><i class="bi bi-trash3"></i></button>
-            </form>
-          </td>
-        </tr>
         {% endfor %}
-      </tbody>
-    </table>
-  </div>
+        <th style="width:38px"></th>
+      </tr>
+    </thead>
+    <tbody id="gamesBody">
+      {% if not games %}
+      <tr><td colspan="99" class="text-center text-secondary py-4">暂无数据</td></tr>
+      {% endif %}
+      {% for g in games %}
+      <tr data-id="{{ g.id }}" id="row-{{ g.id }}">
+        <!-- Cover cell (shows image; click opens URL editor) -->
+        <td style="padding:4px 6px">
+          <div class="cover-cell" onclick="editCover({{ g.id }}, {{ (g.cover_url or '') | tojson }})"
+               style="cursor:pointer;width:60px;height:38px;border-radius:3px;overflow:hidden;
+                      background:#2a2f45;display:flex;align-items:center;justify-content:center">
+            {% if g.cover_url %}
+            <img src="{{ g.cover_url }}" style="width:100%;height:100%;object-fit:cover"
+                 loading="lazy" onerror="this.style.display='none'">
+            {% else %}
+            <i class="bi bi-controller text-secondary" style="font-size:.9rem"></i>
+            {% endif %}
+          </div>
+        </td>
+        {% for col in columns %}
+        {% if col.visible and col.col_key != 'cover_url' %}
+        <td class="editable-cell"
+            data-id="{{ g.id }}"
+            data-field="{{ col.col_key }}"
+            data-type="{{ col.col_type }}"
+            style="max-width:220px;padding:5px 8px">
+          {%- if col.col_key == 'tier' -%}
+            {%- if g.tier == 1 %}<span class="badge bg-secondary">1档</span>
+            {%- elif g.tier == 2 %}<span class="badge bg-info text-dark">2档 Extra</span>
+            {%- elif g.tier == 3 %}<span class="badge" style="background:#7c3aed">3档 Premium</span>
+            {%- else %}<span class="text-secondary small">—</span>{%- endif %}
+          {%- elif col.col_key == 'status' -%}
+            {%- if g.status == 'active' %}<span class="badge bg-success">在库</span>
+            {%- else %}<span class="badge bg-secondary">已出库</span>{%- endif %}
+          {%- elif col.col_key == 'store_url' -%}
+            {%- if g.store_url %}<a href="{{ g.store_url }}" target="_blank" class="text-info small" style="word-break:break-all">{{ g.store_url[:40] }}{% if g.store_url|length > 40 %}…{% endif %}</a>
+            {%- else %}<span class="text-secondary small">—</span>{%- endif %}
+          {%- elif col.col_key == 'cover_url' -%}
+            <span class="text-secondary small" style="word-break:break-all">{{ (g.cover_url or '') [:40] }}{% if g.cover_url and g.cover_url|length > 40 %}…{% endif %}</span>
+          {%- elif col.col_key == 'entry_date' -%}
+            {{ g.entry_date.strftime("%Y-%m-%d") if g.entry_date else '' }}
+          {%- elif col.col_key == 'exit_date' -%}
+            {{ g.exit_date.strftime("%Y-%m-%d") if g.exit_date else '' }}
+          {%- elif col.col_key == 'title_en' -%}
+            <span class="fw-semibold small">{{ g.title_en or '' }}</span>
+          {%- elif col.col_key == 'title_zh' -%}
+            <span class="small">{{ g.title_zh or '' }}</span>
+          {%- elif col.col_key == 'platforms' -%}
+            <span class="small text-secondary">{{ g.platforms or '' }}</span>
+          {%- elif col.col_key == 'product_id' -%}
+            <span class="small text-secondary font-monospace" style="font-size:.7rem">{{ g.product_id or '' }}</span>
+          {%- elif col.col_key == 'note' -%}
+            <span class="small text-secondary">{{ g.note or '' }}</span>
+          {%- else -%}
+            <span class="small text-secondary" data-extra-key="{{ col.col_key }}"
+                  data-extra-json="{{ (g.extra_data or '{}') | e }}"></span>
+          {%- endif -%}
+        </td>
+        {% endif %}
+        {% endfor %}
+        <!-- Delete button -->
+        <td style="padding:4px 6px;text-align:center">
+          <button class="btn btn-sm btn-link text-danger p-0"
+                  style="opacity:.5;line-height:1"
+                  onclick="deleteRow({{ g.id }}, {{ g.title_en | tojson }})"
+                  title="删除">
+            <i class="bi bi-trash3" style="font-size:.85rem"></i>
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
 
-<!-- Pagination -->
+<!-- ============================================================
+     Pagination
+     ============================================================ -->
 {% if total_pages > 1 %}
 <nav class="mb-4">
-  <ul class="pagination pagination-sm">
-    {% for p in range(1, total_pages + 1) %}
+  <ul class="pagination pagination-sm justify-content-center">
+    <li class="page-item {% if page == 1 %}disabled{% endif %}">
+      <a class="page-link" href="?page={{ page - 1 }}{% if filter_tier %}&tier={{ filter_tier }}{% endif %}{% if filter_status %}&status={{ filter_status }}{% endif %}{% if filter_q %}&q={{ filter_q }}{% endif %}">上一页</a>
+    </li>
+    {% for p in range([1, page-2]|max, [total_pages+1, page+3]|min) %}
     <li class="page-item {% if p == page %}active{% endif %}">
-      <a class="page-link"
-         href="?page={{ p }}{% if filter_tier %}&tier={{ filter_tier }}{% endif %}{% if filter_status %}&status={{ filter_status }}{% endif %}{% if filter_q %}&q={{ filter_q }}{% endif %}"
-      >{{ p }}</a>
+      <a class="page-link" href="?page={{ p }}{% if filter_tier %}&tier={{ filter_tier }}{% endif %}{% if filter_status %}&status={{ filter_status }}{% endif %}{% if filter_q %}&q={{ filter_q }}{% endif %}">{{ p }}</a>
     </li>
     {% endfor %}
+    <li class="page-item {% if page == total_pages %}disabled{% endif %}">
+      <a class="page-link" href="?page={{ page + 1 }}{% if filter_tier %}&tier={{ filter_tier }}{% endif %}{% if filter_status %}&status={{ filter_status }}{% endif %}{% if filter_q %}&q={{ filter_q }}{% endif %}">下一页</a>
+    </li>
   </ul>
+  <p class="text-center text-secondary small">第 {{ page }} / {{ total_pages }} 页，共 {{ total }} 条</p>
 </nav>
 {% endif %}
 
-<!-- PS Store CSV import -->
-<div class="card mb-3" style="background:#1e2130;border-radius:.75rem">
+<!-- ============================================================
+     PS Store CSV import
+     ============================================================ -->
+<div class="card mb-3">
   <div class="card-body">
     <h6 class="fw-semibold mb-2">
-      <i class="bi bi-file-earmark-arrow-up me-1 text-info"></i>
-      <span data-zh="PS Store 导出 CSV 导入" data-en="Import from PS Store CSV">PS Store 导出 CSV 导入</span>
+      <i class="bi bi-file-earmark-arrow-up me-1 text-info"></i>PS Store 导出 CSV 导入
     </h6>
-    <p class="text-secondary small mb-3">支持 PS Store 后台导出格式（GBK 编码）。自动提取英文名；纯中文标题通过 AI 翻译（需配置 DeepSeek 或 Claude API）。</p>
+    <p class="text-secondary small mb-2">支持 PS Store 后台导出格式（GBK 编码）。自动提取英文名；纯中文标题通过 AI 翻译（需配置 DeepSeek 或 Claude API）。</p>
     <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
-      <input type="file" id="psStoreCsvFile" accept=".csv" class="form-control form-control-sm bg-dark border-secondary text-light" style="max-width:280px">
+      <input type="file" id="psStoreCsvFile" accept=".csv"
+             class="form-control form-control-sm" style="max-width:280px">
       <div class="form-check mb-0">
         <input class="form-check-input" type="checkbox" id="clearFirst" value="1">
         <label class="form-check-label small" for="clearFirst">导入前清空数据库</label>
@@ -163,24 +194,25 @@
         <i class="bi bi-cloud-upload me-1"></i>导入
       </button>
     </div>
-    <div id="psStoreProgress" class="small" style="display:none">
+    <div id="psStoreProgress" style="display:none" class="small">
       <div class="d-flex align-items-center gap-2">
-        <div class="spinner-border spinner-border-sm text-info" role="status"></div>
-        <span id="psStoreProgressText">处理中，AI 翻译可能需要数分钟…</span>
+        <div class="spinner-border spinner-border-sm text-info"></div>
+        <span>处理中，AI 翻译可能需要数分钟…</span>
       </div>
     </div>
     <div id="psStoreResult" class="small mt-2" style="display:none"></div>
   </div>
 </div>
 
-<!-- Bulk CSV import -->
-<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+<!-- ============================================================
+     Bulk CSV import
+     ============================================================ -->
+<div class="card mb-4">
   <div class="card-body">
     <h6 class="fw-semibold mb-1">批量 CSV 导入</h6>
     <p class="text-secondary small mb-2">首行为表头，支持字段：<code>concept_id, title_en, title_zh, tier, entry_date, exit_date, platforms, genre, age_rating, streaming, product_id, store_url, cover_url, region, note</code></p>
-    <textarea id="csvInput" class="form-control form-control-sm bg-dark border-secondary text-light font-monospace mb-2"
-              rows="5" placeholder="concept_id,title_en,tier,entry_date,platforms
-10011231,Wild Arms 4,3,2026-05-05,PS4|PS5"></textarea>
+    <textarea id="csvInput" class="form-control form-control-sm font-monospace mb-2" rows="4"
+              placeholder="concept_id,title_en,tier,entry_date,platforms&#10;10011231,Wild Arms 4,3,2026-05-05,PS4|PS5"></textarea>
     <button class="btn btn-sm btn-outline-success" onclick="bulkImport()">
       <i class="bi bi-upload me-1"></i>导入
     </button>
@@ -188,199 +220,447 @@
   </div>
 </div>
 
-<!-- Add / Edit Modal -->
-<div class="modal fade" id="gameModal" tabindex="-1">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content" style="background:#1e2130">
-      <div class="modal-header border-secondary">
-        <h5 class="modal-title" id="modalTitle">新增游戏</h5>
-        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+<!-- ============================================================
+     Column Config Offcanvas
+     ============================================================ -->
+<div class="offcanvas offcanvas-end" tabindex="-1" id="colConfigPanel"
+     style="width:320px">
+  <div class="offcanvas-header">
+    <h5 class="offcanvas-title fw-bold">列配置</h5>
+    <button type="button" class="btn-close" data-bs-dismiss="offcanvas"></button>
+  </div>
+  <div class="offcanvas-body p-2">
+    <p class="text-secondary small px-2 mb-2">点击眼睛图标切换显示/隐藏，拖动 ≡ 调整顺序。修改后刷新页面生效。</p>
+    <ul class="list-group list-group-flush" id="colConfigList">
+      {% for col in columns %}
+      <li class="list-group-item d-flex align-items-center gap-2 py-2 px-2"
+          id="colitem-{{ col.col_key }}" data-col-key="{{ col.col_key }}"
+          style="cursor:default">
+        <span class="text-secondary" style="cursor:grab;user-select:none"
+              title="拖动排序">≡</span>
+        <span class="flex-grow-1 small fw-semibold" id="colname-{{ col.col_key }}">{{ col.display_name }}</span>
+        {% if not col.is_core %}
+        <span class="badge bg-secondary" style="font-size:.65rem">自定义</span>
+        {% endif %}
+        <button class="btn btn-sm btn-link p-0 text-secondary" title="切换显示"
+                onclick="toggleColVisibility('{{ col.col_key }}', this)"
+                data-visible="{{ 'true' if col.visible else 'false' }}">
+          <i class="bi bi-eye{% if not col.visible %}-slash{% endif %}" style="font-size:1rem"></i>
+        </button>
+        {% if not col.is_core %}
+        <button class="btn btn-sm btn-link p-0 text-danger" title="删除列"
+                onclick="deleteCustomCol('{{ col.col_key }}')">
+          <i class="bi bi-x-lg" style="font-size:.85rem"></i>
+        </button>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+
+    <hr class="my-3">
+    <div class="px-2">
+      <h6 class="fw-semibold mb-2">添加自定义列</h6>
+      <div class="mb-2">
+        <label class="form-label small text-secondary mb-1">字段 Key（英文，唯一）</label>
+        <input type="text" id="newColKey" class="form-control form-control-sm"
+               placeholder="my_rating">
       </div>
-      <form id="gameForm" method="post">
-        <div class="modal-body">
-          <div class="row g-3">
-
-            <div class="col-12 col-md-8">
-              <label class="form-label small text-secondary">英文名称 <span class="text-danger">*</span></label>
-              <input type="text" name="title_en" id="f_title_en" class="form-control form-control-sm bg-dark border-secondary text-light" required>
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary">档位 <span class="text-danger">*</span></label>
-              <select name="tier" id="f_tier" class="form-select form-select-sm bg-dark border-secondary text-light" required>
-                <option value="1">1档 Essential（会免）</option>
-                <option value="2">2档 Extra</option>
-                <option value="3">3档 Premium</option>
-              </select>
-            </div>
-
-            <div class="col-12 col-md-8">
-              <label class="form-label small text-secondary">中文名称</label>
-              <input type="text" name="title_zh" id="f_title_zh" class="form-control form-control-sm bg-dark border-secondary text-light">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary">状态</label>
-              <select name="status" id="f_status" class="form-select form-select-sm bg-dark border-secondary text-light">
-                <option value="active">在库</option>
-                <option value="removed">已出库</option>
-              </select>
-            </div>
-
-            <div class="col-12 col-md-6">
-              <label class="form-label small text-secondary">Concept ID</label>
-              <input type="number" name="concept_id" id="f_concept_id" class="form-control form-control-sm bg-dark border-secondary text-light">
-            </div>
-            <div class="col-12 col-md-6">
-              <label class="form-label small text-secondary">Product ID</label>
-              <input type="text" name="product_id" id="f_product_id" class="form-control form-control-sm bg-dark border-secondary text-light" placeholder="UP9000-PPSA23536_00-...">
-            </div>
-
-            <div class="col-12">
-              <label class="form-label small text-secondary">封面链接</label>
-              <input type="url" name="cover_url" id="f_cover_url" class="form-control form-control-sm bg-dark border-secondary text-light"
-                     placeholder="https://image.api.playstation.com/..."
-                     oninput="updateCoverPreview(this.value)">
-              <div id="coverPreview" class="mt-2" style="display:none">
-                <img id="coverImg" src="" style="max-height:80px;border-radius:4px" onerror="this.style.display='none'">
-              </div>
-            </div>
-
-            <div class="col-12">
-              <label class="form-label small text-secondary">商店链接</label>
-              <input type="url" name="store_url" id="f_store_url" class="form-control form-control-sm bg-dark border-secondary text-light" placeholder="https://store.playstation.com/zh-hant-hk/...">
-            </div>
-
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary">入库日期 <span class="text-danger">*</span></label>
-              <input type="date" name="entry_date" id="f_entry_date" class="form-control form-control-sm bg-dark border-secondary text-light" required>
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary">出库日期</label>
-              <input type="date" name="exit_date" id="f_exit_date" class="form-control form-control-sm bg-dark border-secondary text-light">
-            </div>
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary">发售日</label>
-              <input type="date" name="release_date" id="f_release_date" class="form-control form-control-sm bg-dark border-secondary text-light">
-            </div>
-
-            <div class="col-12 col-md-6">
-              <label class="form-label small text-secondary d-block">平台</label>
-              <div class="d-flex gap-3">
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" name="platform_ps4" id="f_ps4" value="1">
-                  <label class="form-check-label small" for="f_ps4">PS4</label>
-                </div>
-                <div class="form-check">
-                  <input class="form-check-input" type="checkbox" name="platform_ps5" id="f_ps5" value="1">
-                  <label class="form-check-label small" for="f_ps5">PS5</label>
-                </div>
-              </div>
-            </div>
-
-            <div class="col-12 col-md-6">
-              <label class="form-label small text-secondary">年龄评级</label>
-              <input type="text" name="age_rating" id="f_age_rating" class="form-control form-control-sm bg-dark border-secondary text-light" placeholder="IARC 12+">
-            </div>
-
-            <div class="col-12 col-md-8">
-              <label class="form-label small text-secondary">类型</label>
-              <input type="text" name="genre" id="f_genre" class="form-control form-control-sm bg-dark border-secondary text-light" placeholder="ROLE_PLAYING_GAMES">
-            </div>
-
-            <div class="col-12 col-md-4">
-              <label class="form-label small text-secondary d-block">&nbsp;</label>
-              <div class="form-check mt-1">
-                <input class="form-check-input" type="checkbox" name="streaming" id="f_streaming" value="1">
-                <label class="form-check-label small" for="f_streaming">支持串流</label>
-              </div>
-            </div>
-
-            <div class="col-12">
-              <label class="form-label small text-secondary">备注</label>
-              <input type="text" name="note" id="f_note" class="form-control form-control-sm bg-dark border-secondary text-light">
-            </div>
-
-            <input type="hidden" name="region" value="HK">
-          </div>
-        </div>
-        <div class="modal-footer border-secondary">
-          <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-dismiss="modal">取消</button>
-          <button type="submit" class="btn btn-sm btn-primary">保存</button>
-        </div>
-      </form>
+      <div class="mb-2">
+        <label class="form-label small text-secondary mb-1">显示名称</label>
+        <input type="text" id="newColName" class="form-control form-control-sm"
+               placeholder="我的评分">
+      </div>
+      <div class="mb-2">
+        <label class="form-label small text-secondary mb-1">类型</label>
+        <select id="newColType" class="form-select form-select-sm">
+          <option value="text">文本</option>
+          <option value="number">数字</option>
+          <option value="date">日期</option>
+          <option value="url">链接</option>
+        </select>
+      </div>
+      <button class="btn btn-sm btn-outline-primary w-100" onclick="addCustomCol()">
+        <i class="bi bi-plus-lg me-1"></i>添加列
+      </button>
+      <div id="colAddResult" class="small mt-2" style="display:none"></div>
     </div>
   </div>
 </div>
 
+<!-- ============================================================
+     Cover URL editor modal
+     ============================================================ -->
+<div class="modal fade" id="coverModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title">编辑封面链接</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-2">
+        <input type="url" id="coverUrlInput" class="form-control form-control-sm"
+               placeholder="https://...">
+        <div class="mt-2" id="coverModalPreview" style="display:none">
+          <img id="coverModalImg" src="" style="max-width:100%;border-radius:4px"
+               onerror="this.style.display='none'">
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary"
+                data-bs-dismiss="modal">取消</button>
+        <button type="button" class="btn btn-sm btn-primary"
+                onclick="saveCoverUrl()">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Toast notification
+     ============================================================ -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index:1100">
+  <div id="saveToast" class="toast align-items-center text-bg-success border-0"
+       role="alert" data-bs-autohide="true" data-bs-delay="2000">
+    <div class="d-flex">
+      <div class="toast-body small" id="saveToastBody">已保存</div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto"
+              data-bs-dismiss="toast"></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Inline editing & column config JS
+     ============================================================ -->
 <script>
-function openAdd() {
-  document.getElementById('modalTitle').textContent = '新增游戏';
-  document.getElementById('gameForm').action = '/psn-library/add';
-  document.getElementById('gameForm').reset();
-  document.getElementById('f_tier').value = '2';
-  document.getElementById('f_status').value = 'active';
-  document.getElementById('coverPreview').style.display = 'none';
+/* ---- tier / status option maps ---- */
+const TIER_OPTIONS = [
+  {value:'1', label:'1档 Essential'},
+  {value:'2', label:'2档 Extra'},
+  {value:'3', label:'3档 Premium'},
+];
+const STATUS_OPTIONS = [
+  {value:'active',   label:'在库'},
+  {value:'removed',  label:'已出库'},
+];
+
+/* ---- Toast helper ---- */
+function showToast(msg, isErr) {
+  const t = document.getElementById('saveToast');
+  t.className = 'toast align-items-center border-0 ' +
+                (isErr ? 'text-bg-danger' : 'text-bg-success');
+  document.getElementById('saveToastBody').textContent = msg;
+  bootstrap.Toast.getOrCreateInstance(t).show();
 }
 
-function openEdit(g) {
-  document.getElementById('modalTitle').textContent = '编辑游戏';
-  document.getElementById('gameForm').action = '/psn-library/' + g.id + '/edit';
-  document.getElementById('f_title_en').value = g.title_en || '';
-  document.getElementById('f_title_zh').value = g.title_zh || '';
-  document.getElementById('f_concept_id').value = g.concept_id || '';
-  document.getElementById('f_product_id').value = g.product_id || '';
-  document.getElementById('f_store_url').value = g.store_url || '';
-  document.getElementById('f_cover_url').value = g.cover_url || '';
-  document.getElementById('f_release_date').value = g.release_date || '';
-  document.getElementById('f_entry_date').value = g.entry_date || '';
-  document.getElementById('f_exit_date').value = g.exit_date || '';
-  document.getElementById('f_tier').value = g.tier;
-  document.getElementById('f_status').value = g.status;
-  document.getElementById('f_ps4').checked = g.ps4;
-  document.getElementById('f_ps5').checked = g.ps5;
-  document.getElementById('f_genre').value = g.genre || '';
-  document.getElementById('f_age_rating').value = g.age_rating || '';
-  document.getElementById('f_streaming').checked = g.streaming;
-  document.getElementById('f_note').value = g.note || '';
-  updateCoverPreview(g.cover_url || '');
-  new bootstrap.Modal(document.getElementById('gameModal')).show();
+/* ---- Cell value renderer (for display after save) ---- */
+function renderCellDisplay(td, field, value) {
+  if (field === 'tier') {
+    const map = {'1':'<span class="badge bg-secondary">1档</span>',
+                 '2':'<span class="badge bg-info text-dark">2档 Extra</span>',
+                 '3':'<span class="badge" style="background:#7c3aed">3档 Premium</span>'};
+    td.innerHTML = map[value] || '<span class="text-secondary small">—</span>';
+  } else if (field === 'status') {
+    td.innerHTML = value === 'active'
+      ? '<span class="badge bg-success">在库</span>'
+      : '<span class="badge bg-secondary">已出库</span>';
+  } else if (field === 'store_url') {
+    if (value) {
+      const short = value.length > 40 ? value.slice(0,40)+'…' : value;
+      td.innerHTML = `<a href="${value}" target="_blank" class="text-info small">${short}</a>`;
+    } else {
+      td.innerHTML = '<span class="text-secondary small">—</span>';
+    }
+  } else {
+    td.textContent = value || '';
+  }
 }
 
-function updateCoverPreview(url) {
-  const preview = document.getElementById('coverPreview');
-  const img = document.getElementById('coverImg');
-  if (url && url.startsWith('http')) {
+/* ---- Save cell via PATCH ---- */
+async function saveCell(gameId, field, value, td, originalContent) {
+  try {
+    const r = await fetch(`/psn-library/${gameId}/cell`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({field, value}),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    renderCellDisplay(td, field, value);
+    showToast('已保存');
+  } catch(e) {
+    td.innerHTML = originalContent;
+    showToast('保存失败: ' + e.message, true);
+  }
+}
+
+/* ---- Build an inline <input> or <select> ---- */
+function buildEditor(field, colType, currentValue) {
+  if (field === 'tier') {
+    const sel = document.createElement('select');
+    sel.className = 'form-select form-select-sm';
+    TIER_OPTIONS.forEach(o => {
+      const opt = new Option(o.label, o.value);
+      if (o.value === String(currentValue)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    return sel;
+  }
+  if (field === 'status') {
+    const sel = document.createElement('select');
+    sel.className = 'form-select form-select-sm';
+    STATUS_OPTIONS.forEach(o => {
+      const opt = new Option(o.label, o.value);
+      if (o.value === currentValue) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    return sel;
+  }
+  const inp = document.createElement('input');
+  inp.className = 'form-control form-control-sm';
+  inp.type = colType === 'date' ? 'date' : colType === 'number' ? 'number' : 'text';
+  inp.value = currentValue || '';
+  return inp;
+}
+
+/* ---- Click handler: start editing a cell ---- */
+document.addEventListener('click', function(e) {
+  const td = e.target.closest('td.editable-cell');
+  if (!td) return;
+  if (td.querySelector('input, select')) return; // already editing
+
+  const gameId = td.dataset.id;
+  const field   = td.dataset.field;
+  const colType = td.dataset.type || 'text';
+
+  // Skip cover_url edits here (handled by editCover)
+  if (field === 'cover_url') return;
+
+  const originalContent = td.innerHTML;
+
+  // Determine current raw value
+  let currentValue = td.textContent.trim();
+  if (field === 'tier') {
+    const badge = td.querySelector('.badge');
+    currentValue = badge ? (badge.classList.contains('bg-secondary') ? '1' :
+                            badge.classList.contains('bg-info') ? '2' : '3') : '2';
+  } else if (field === 'status') {
+    currentValue = td.querySelector('.badge.bg-success') ? 'active' : 'removed';
+  } else if (field === 'store_url') {
+    const a = td.querySelector('a');
+    currentValue = a ? a.href : '';
+  }
+
+  const editor = buildEditor(field, colType, currentValue);
+
+  td.innerHTML = '';
+  td.appendChild(editor);
+  editor.focus();
+  if (editor.select) editor.select();
+
+  function commit() {
+    const newValue = editor.value;
+    td.innerHTML = originalContent;
+    if (newValue !== currentValue) {
+      saveCell(gameId, field, newValue, td, originalContent);
+    }
+  }
+
+  editor.addEventListener('blur', commit, {once: true});
+  editor.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Enter') { ev.preventDefault(); editor.blur(); }
+    if (ev.key === 'Escape') {
+      editor.removeEventListener('blur', commit);
+      td.innerHTML = originalContent;
+    }
+    if (ev.key === 'Tab') {
+      ev.preventDefault();
+      const allTds = Array.from(document.querySelectorAll(`tr[data-id="${gameId}"] td.editable-cell`));
+      const idx = allTds.indexOf(td);
+      if (idx >= 0 && idx + 1 < allTds.length) {
+        editor.blur();
+        allTds[idx + 1].click();
+      }
+    }
+  });
+});
+
+/* ---- Cover URL editor ---- */
+let _coverEditId = null;
+function editCover(gameId, currentUrl) {
+  _coverEditId = gameId;
+  document.getElementById('coverUrlInput').value = currentUrl || '';
+  const preview = document.getElementById('coverModalPreview');
+  const img = document.getElementById('coverModalImg');
+  if (currentUrl) {
+    img.src = currentUrl;
+    img.style.display = 'block';
+    preview.style.display = 'block';
+  } else {
+    preview.style.display = 'none';
+  }
+  bootstrap.Modal.getOrCreateInstance(document.getElementById('coverModal')).show();
+}
+
+document.getElementById('coverUrlInput').addEventListener('input', function() {
+  const url = this.value.trim();
+  const img = document.getElementById('coverModalImg');
+  const preview = document.getElementById('coverModalPreview');
+  if (url) {
     img.src = url;
     img.style.display = 'block';
     preview.style.display = 'block';
   } else {
     preview.style.display = 'none';
   }
+});
+
+async function saveCoverUrl() {
+  const url = document.getElementById('coverUrlInput').value.trim();
+  if (_coverEditId === null) return;
+  bootstrap.Modal.getInstance(document.getElementById('coverModal')).hide();
+  try {
+    const r = await fetch(`/psn-library/${_coverEditId}/cell`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({field:'cover_url', value: url}),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    // Update the cover cell image
+    const coverDiv = document.querySelector(`#row-${_coverEditId} .cover-cell`);
+    if (coverDiv) {
+      coverDiv.innerHTML = url
+        ? `<img src="${url}" style="width:100%;height:100%;object-fit:cover" loading="lazy" onerror="this.style.display='none'">`
+        : `<i class="bi bi-controller text-secondary" style="font-size:.9rem"></i>`;
+      coverDiv.setAttribute('onclick', `editCover(${_coverEditId}, ${JSON.stringify(url)})`);
+    }
+    showToast('封面已保存');
+  } catch(e) {
+    showToast('保存失败: ' + e.message, true);
+  }
 }
 
+/* ---- Add empty row ---- */
+async function addEmptyRow() {
+  try {
+    const r = await fetch('/psn-library/add-empty', {method:'POST'});
+    const data = await r.json();
+    if (data.id) {
+      showToast('已新增空行，刷新中…');
+      setTimeout(() => location.reload(), 800);
+    } else {
+      showToast('新增失败', true);
+    }
+  } catch(e) {
+    showToast('新增失败: ' + e.message, true);
+  }
+}
+
+/* ---- Delete row ---- */
+async function deleteRow(gameId, title) {
+  if (!confirm(`删除 "${title || '此条目'}"？`)) return;
+  try {
+    const r = await fetch(`/psn-library/${gameId}/delete`, {method:'POST'});
+    if (r.ok || r.redirected) {
+      document.getElementById('row-' + gameId)?.remove();
+      showToast('已删除');
+    } else {
+      showToast('删除失败', true);
+    }
+  } catch(e) {
+    showToast('删除失败: ' + e.message, true);
+  }
+}
+
+/* ---- Column visibility toggle ---- */
+async function toggleColVisibility(colKey, btn) {
+  const isVisible = btn.dataset.visible === 'true';
+  const newVisible = !isVisible;
+  try {
+    const r = await fetch(`/psn-library/columns/${colKey}`, {
+      method: 'PATCH',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({visible: newVisible}),
+    });
+    if (!r.ok) throw new Error();
+    btn.dataset.visible = newVisible ? 'true' : 'false';
+    const icon = btn.querySelector('i');
+    icon.className = newVisible ? 'bi bi-eye' : 'bi bi-eye-slash';
+    icon.style.fontSize = '1rem';
+    showToast(newVisible ? '列已显示（刷新生效）' : '列已隐藏（刷新生效）');
+  } catch(e) {
+    showToast('操作失败', true);
+  }
+}
+
+/* ---- Add custom column ---- */
+async function addCustomCol() {
+  const col_key = document.getElementById('newColKey').value.trim();
+  const display_name = document.getElementById('newColName').value.trim();
+  const col_type = document.getElementById('newColType').value;
+  const result = document.getElementById('colAddResult');
+
+  if (!col_key || !display_name) {
+    result.style.display = '';
+    result.innerHTML = '<span class="text-warning">请填写 Key 和名称。</span>';
+    return;
+  }
+  try {
+    const r = await fetch('/psn-library/columns', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({col_key, display_name, col_type}),
+    });
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    result.style.display = '';
+    result.innerHTML = `<span class="text-success">列 "${data.display_name}" 已添加，刷新后生效。</span>`;
+    document.getElementById('newColKey').value = '';
+    document.getElementById('newColName').value = '';
+  } catch(e) {
+    result.style.display = '';
+    result.innerHTML = `<span class="text-danger">失败: ${e.message}</span>`;
+  }
+}
+
+/* ---- Delete custom column ---- */
+async function deleteCustomCol(colKey) {
+  if (!confirm(`删除自定义列 "${colKey}"？此操作不可撤销。`)) return;
+  try {
+    const r = await fetch(`/psn-library/columns/${colKey}`, {method:'DELETE'});
+    if (!r.ok) throw new Error((await r.json()).error);
+    document.getElementById('colitem-' + colKey)?.remove();
+    showToast('列已删除，刷新后生效');
+  } catch(e) {
+    showToast('删除失败: ' + e.message, true);
+  }
+}
+
+/* ---- Extra-data cells: populate from JSON ---- */
+document.querySelectorAll('[data-extra-key]').forEach(span => {
+  try {
+    const obj = JSON.parse(span.dataset.extraJson || '{}');
+    span.textContent = obj[span.dataset.extraKey] || '';
+  } catch(_) {}
+});
+
+/* ---- PS Store CSV import ---- */
 async function importPsStore() {
   const fileInput = document.getElementById('psStoreCsvFile');
   const clearFirst = document.getElementById('clearFirst').checked ? '1' : '';
   const progress = document.getElementById('psStoreProgress');
   const result = document.getElementById('psStoreResult');
-
   if (!fileInput.files || !fileInput.files[0]) {
     result.style.display = '';
     result.innerHTML = '<span class="text-warning">请先选择 CSV 文件。</span>';
     return;
   }
-
   progress.style.display = '';
   result.style.display = 'none';
-
   const formData = new FormData();
   formData.append('file', fileInput.files[0]);
   if (clearFirst) formData.append('clear_first', clearFirst);
-
   try {
-    const r = await fetch('/psn-library/import-ps-store', {
-      method: 'POST',
-      body: formData
-    });
+    const r = await fetch('/psn-library/import-ps-store', {method:'POST', body: formData});
     const data = await r.json();
     progress.style.display = 'none';
     result.style.display = '';
@@ -398,6 +678,7 @@ async function importPsStore() {
   }
 }
 
+/* ---- Bulk CSV import ---- */
 async function bulkImport() {
   const csv = document.getElementById('csvInput').value.trim();
   if (!csv) return;
@@ -408,8 +689,8 @@ async function bulkImport() {
   try {
     const r = await fetch('/psn-library/bulk', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({csv})
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({csv}),
     });
     const data = await r.json();
     result.textContent = `成功 ${data.ok} 条，失败 ${data.err} 条`;

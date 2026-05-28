@@ -48,6 +48,26 @@ def _load_env(env_path: str) -> None:
 
 _SKIP_EN = re.compile(r'^\s*[-–]|PS[45]|PlayStation|^&\s*PS[45]', re.IGNORECASE)
 
+_LANG_PAREN = re.compile(
+    r'[\(（](?:[简繁體体]+[中文日英韩泰韓越]+|.+?[文版本]|中.{0,4}英.{0,4}韩.{0,4}'
+    r'|Chinese|Korean|Japanese|English|version)[^)）]*[\)）]',
+    re.IGNORECASE,
+)
+_PLAT_PAREN = re.compile(r'[\(（]\s*PS[45].{0,30}?[\)）]', re.IGNORECASE)
+_TAIL_TAGS  = re.compile(
+    r'\s*(?:PS[45][?？]?\s*[&和]?\s*PS[45][?？]?|主機版|PlayStation\s*Plus)\s*$',
+    re.IGNORECASE,
+)
+
+
+def _clean_zh_name(s: str) -> str:
+    """Strip language/platform noise from a PS Store Chinese title."""
+    s = _LANG_PAREN.sub('', s)
+    s = _PLAT_PAREN.sub('', s)
+    s = re.sub(r'\s*[\(（]\s*[\)）]', '', s)  # empty brackets
+    s = _TAIL_TAGS.sub('', s)
+    return s.strip(' \t　《》')
+
 
 def _extract_en_from_name(name: str):
     """Extract (title_en, title_zh) from PS Store name field."""
@@ -59,7 +79,7 @@ def _extract_en_from_name(name: str):
         after_pre = re.split(r'[\(（]', after_raw)[0].strip().rstrip('–- \t')
 
         if re.search(r'[一-鿿぀-ヿ가-힯]', inner):
-            zh = inner
+            zh = _clean_zh_name(inner)
             if (after_pre and len(after_pre) >= 3
                     and not re.search(r'[一-鿿぀-ヿ가-힯]', after_pre)
                     and re.search(r'[A-Za-z]', after_pre)
@@ -74,7 +94,7 @@ def _extract_en_from_name(name: str):
         en = re.sub(r'\s*[-–]\s*(PS[45]|PlayStation[45]?|中文版|繁體|簡體|英文|日文).*$',
                     '', en, flags=re.IGNORECASE).strip()
         return en, ""
-    return "", name
+    return "", _clean_zh_name(name)
 
 
 def _parse_csv(data: bytes):

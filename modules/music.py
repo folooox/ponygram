@@ -4,8 +4,8 @@ Music search module — powered by Last.fm API.
 Accessible via:
   @bot music <artist - track>  — inline picker
   @bot artist <name>           — inline picker
-  /music <query>               — direct command (album art + navigation)
-  /artist <name>               — direct command
+  /music <query>               — selection-first command (album art)
+  /artist <name>               — direct command (single result)
 
 Requires lastfm_api_key in Web Admin → Settings.
 Results cached 30 minutes per query.
@@ -76,7 +76,6 @@ def _strip_html(text: str) -> str:
 
 
 def get_track_image(detail: Dict) -> Optional[str]:
-    """Extract album art URL from a track.getInfo result dict."""
     album = detail.get("album") or {}
     images = album.get("image") or []
     for size in ("extralarge", "large", "medium"):
@@ -88,7 +87,6 @@ def get_track_image(detail: Dict) -> Optional[str]:
 
 
 def get_artist_image(artist: Dict) -> Optional[str]:
-    """Extract artist image URL from an artist.getInfo result dict."""
     images = artist.get("image") or []
     for size in ("extralarge", "large", "mega"):
         for img in images:
@@ -160,26 +158,7 @@ def _format_artist(artist: Dict, top_tracks: List[Dict]) -> str:
     return "\n".join(lines)
 
 
-def _track_keyboard(results: list, current_idx: int, cache_key: str) -> Optional[InlineKeyboardMarkup]:
-    """Row of track buttons excluding the currently shown one."""
-    buttons = []
-    for i, t in enumerate(results[:5]):
-        if i == current_idx:
-            continue
-        a = t.get("artist", "?")
-        artist_name = a.get("name", "?") if isinstance(a, dict) else str(a)
-        n = t.get("name", "?")[:18]
-        buttons.append(InlineKeyboardButton(
-            f"{i+1}. {n} — {artist_name[:12]}",
-            callback_data=f"music:track:{cache_key}:{i}",
-        ))
-        if len(buttons) >= 3:
-            break
-    return InlineKeyboardMarkup([buttons]) if buttons else None
-
-
 async def search_tracks(query: str, context) -> Optional[list]:
-    """Search tracks; returns list or None on API error."""
     api_key = await _get_api_key(context)
     if not api_key:
         return None
@@ -204,7 +183,6 @@ async def search_tracks(query: str, context) -> Optional[list]:
 
 
 async def search_artist(name: str, context) -> Optional[tuple]:
-    """Return (artist_dict, top_tracks) or None on error/not found."""
     api_key = await _get_api_key(context)
     if not api_key:
         return None
@@ -226,7 +204,6 @@ async def search_artist(name: str, context) -> Optional[tuple]:
 
 
 async def _fetch_track_detail(api_key: str, artist_name: str, track_name: str) -> Dict:
-    """Fetch full track info from Last.fm; returns raw track dict or empty."""
     detail_key = f"track_info:{artist_name}:{track_name}".lower()
     cached = await music_cache.get(detail_key)
     if cached:
@@ -238,24 +215,40 @@ async def _fetch_track_detail(api_key: str, artist_name: str, track_name: str) -
     return detail
 
 
-async def on_music_button(update: Update, context) -> None:
+def _music_select_keyboard(results: list, cache_key: str) -> InlineKeyboardMarkup:
+    rows: list = []
+    row: list = []
+    for i, t in enumerate(results[:5]):
+        a = t.get("artist", "?")
+        artist_name = a.get("name", "?") if isinstance(a, dict) else str(a)
+        name = t.get("name", "?")[:16]
+        label = f"{i+1}. {name} — {artist_name[:12]}"
+        row.append(InlineKeyboardButton(label, callback_data=f"music_sel:{cache_key}:{i}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return InlineKeyboardMarkup(rows)
+
+
+async def on_music_select(update: Update, context) -> None:
     q = update.callback_query
     assert q
     await q.answer()
 
-    _, kind, cache_key, idx_str = q.data.split(":", 3)
+    _, cache_key, idx_str = q.data.split(":", 2)
     idx = int(idx_str)
-    api_key = await _get_api_key(context)
-
-    if kind != "track":
-        return
 
     results = await music_cache.get(cache_key)
     if not results or idx >= len(results):
         await q.edit_message_text("结果已过期，请重新搜索。")
         return
 
+    await q.edit_message_text("⏳ 加载中…", reply_markup=None)
+
     top = results[idx]
+    api_key = await _get_api_key(context)
     artist_name = (top.get("artist") or {})
     artist_name = artist_name.get("name", "") if isinstance(artist_name, dict) else str(artist_name)
     detail = {}
@@ -263,17 +256,27 @@ async def on_music_button(update: Update, context) -> None:
         detail = await _fetch_track_detail(api_key, artist_name, top.get("name", ""))
 
     text = _format_track(detail or top)
-    keyboard = _track_keyboard(results, idx, cache_key)
+    art_url = get_track_image(detail) if detail else None
+    chat_id = q.message.chat_id if q.message else None
 
-    if q.message and q.message.photo:
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
+    if art_url and chat_id:
         try:
-            await q.edit_message_caption(text[:1024], parse_mode=ParseMode.HTML,
-                                         reply_markup=keyboard)
+            await context.bot.send_photo(
+                chat_id, art_url,
+                caption=text[:1024], parse_mode=ParseMode.HTML,
+            )
             return
         except Exception:
             pass
-    await q.edit_message_text(text, parse_mode=ParseMode.HTML,
-                               reply_markup=keyboard, disable_web_page_preview=True)
+    if chat_id:
+        await context.bot.send_message(
+            chat_id, text, parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+        )
 
 
 async def cmd_music(update: Update, context) -> None:
@@ -297,27 +300,32 @@ async def cmd_music(update: Update, context) -> None:
     short_key = hashlib.md5(f"track:{query.lower()}".encode()).hexdigest()[:16]
     await music_cache.set(short_key, results)
 
-    api_key = await _get_api_key(context)
-    top = results[0]
-    artist_name = (top.get("artist") or {})
-    artist_name = artist_name.get("name", "") if isinstance(artist_name, dict) else str(artist_name)
-    detail = {}
-    if api_key:
-        detail = await _fetch_track_detail(api_key, artist_name, top.get("name", ""))
-
-    text = _format_track(detail or top)
-    keyboard = _track_keyboard(results, 0, short_key)
-    art_url = get_track_image(detail) if detail else None
-
-    if art_url:
-        try:
-            await msg.reply_photo(art_url, caption=text[:1024],
-                                  parse_mode=ParseMode.HTML, reply_markup=keyboard)
-            return
-        except Exception:
-            pass
-    await msg.reply_text(text, parse_mode=ParseMode.HTML,
-                         reply_markup=keyboard, disable_web_page_preview=True)
+    if len(results) == 1:
+        top = results[0]
+        api_key = await _get_api_key(context)
+        artist_name = (top.get("artist") or {})
+        artist_name = artist_name.get("name", "") if isinstance(artist_name, dict) else str(artist_name)
+        detail = {}
+        if api_key:
+            detail = await _fetch_track_detail(api_key, artist_name, top.get("name", ""))
+        text = _format_track(detail or top)
+        art_url = get_track_image(detail) if detail else None
+        if art_url:
+            try:
+                await msg.reply_photo(art_url, caption=text[:1024], parse_mode=ParseMode.HTML)
+                return
+            except Exception:
+                pass
+        await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+    else:
+        lines = [f"🎵 搜到 <b>{len(results)}</b> 首歌曲，请选择：\n"]
+        for i, t in enumerate(results[:5]):
+            name = t.get("name", "?")
+            a = t.get("artist", "?")
+            artist_name = a.get("name", "?") if isinstance(a, dict) else str(a)
+            lines.append(f"{i+1}. <b>{name}</b> — {artist_name}")
+        keyboard = _music_select_keyboard(results, short_key)
+        await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
 async def cmd_artist(update: Update, context) -> None:
@@ -354,7 +362,7 @@ async def cmd_artist(update: Update, context) -> None:
 def setup(application: Application) -> None:
     registry.register_command("music", cmd_music, "搜索音乐 <歌手 - 歌名>")
     registry.register_command("artist", cmd_artist, "搜索歌手信息 <歌手名>")
-    application.add_handler(CallbackQueryHandler(on_music_button, pattern=r"^music:"))
+    application.add_handler(CallbackQueryHandler(on_music_select, pattern=r"^music_sel:"))
     application.add_handler(CommandHandler("music", cmd_music))
     application.add_handler(CommandHandler("artist", cmd_artist))
     log.info("music module loaded")
