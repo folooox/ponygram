@@ -123,7 +123,7 @@
       </div>
 
       {# ── RAWG ─────────────────────────────────────────────── #}
-      <div class="mb-2">
+      <div class="mb-4">
         <label class="form-label d-flex align-items-center gap-2 flex-wrap">
           <i class="bi bi-controller text-secondary"></i>
           <strong>RAWG.io API Key</strong>
@@ -152,6 +152,32 @@
           </button>
         </div>
         <div id="test-result-rawg" class="small mt-1" style="display:none"></div>
+      </div>
+
+      {# ── DeepSeek ──────────────────────────────────────────── #}
+      <div class="mb-2">
+        <label class="form-label d-flex align-items-center gap-2 flex-wrap">
+          <i class="bi bi-translate text-secondary"></i>
+          <strong>DeepSeek API Key</strong>
+          <span class="text-secondary small">(中文游戏名翻译，优先于 Claude)</span>
+          {% if configs.get('deepseek_api_key') %}
+          <span class="badge bg-success ms-auto" style="font-size:.65rem">已配置</span>
+          {% else %}
+          <span class="badge bg-secondary ms-auto" style="font-size:.65rem">未配置</span>
+          {% endif %}
+        </label>
+        <div class="alert py-2 mb-2" style="background:#1a2535;border:1px solid #2d4a6e;border-radius:.5rem;font-size:.8rem">
+          <i class="bi bi-info-circle me-1" style="color:#7eb8f7"></i>
+          前往 <a href="https://platform.deepseek.com/api_keys" target="_blank" class="text-info">platform.deepseek.com</a>
+          → API Keys → 创建新密钥<br>
+          <span class="text-secondary">用于 /game 搜索时将中文游戏名翻译为英文，提升搜索准确率</span>
+        </div>
+        <div class="d-flex gap-2">
+          <input type="password" class="form-control bg-dark border-secondary text-light font-monospace"
+                 name="deepseek_api_key" style="font-size:.82rem"
+                 placeholder="{% if configs.get('deepseek_api_key') %}••••••••••••••••{% else %}sk-…{% endif %}">
+        </div>
+        <div id="test-result-deepseek" class="small mt-1" style="display:none"></div>
       </div>
 
     </div>
