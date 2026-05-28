@@ -949,7 +949,8 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         form = await request.form()
-        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key"]
+        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key",
+                    "deepseek_api_key"]
         for key in api_keys:
             val = form.get(key, "").strip()
             if val:
