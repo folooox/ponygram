@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 import aiohttp
-from fastapi import Cookie, FastAPI, Form, Request, Response
+from fastapi import Cookie, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -164,6 +164,127 @@ def _parse_psn_csv(csv_text: str) -> List[dict]:
             cleaned["platforms"] = cleaned["platforms"].replace("|", ",")
         rows.append(cleaned)
     return rows
+
+
+import json as _json
+import re as _re
+from datetime import datetime as _dt
+
+
+_SKIP_EN = _re.compile(
+    r'^\s*[-–]|PS[45]|PlayStation|^&\s*PS[45]',
+    _re.IGNORECASE
+)
+
+
+def _extract_en_from_name(name: str) -> tuple[str, str]:
+    """
+    Extract (title_en, title_zh) from PS Store name field.
+    Handles: 《CJK》English, 《English》, pure English, pure CJK.
+    Returns (en, zh) — either may be empty string.
+    """
+    name = name.strip()
+
+    m = _re.search(r'《([^》]+)》', name)
+    if m:
+        inner = m.group(1).strip()
+        after_raw = name[m.end():].strip()
+        # Text before first parenthesis after 》
+        after_pre = _re.split(r'[\(（]', after_raw)[0].strip().rstrip('–- \t')
+
+        if _re.search(r'[一-鿿぀-ヿ가-힯]', inner):
+            # CJK title inside 《》
+            zh = inner
+            # Look for English title text after 》
+            if (after_pre and len(after_pre) >= 3
+                    and not _re.search(r'[一-鿿぀-ヿ가-힯]', after_pre)
+                    and _re.search(r'[A-Za-z]', after_pre)
+                    and not _SKIP_EN.search(after_pre)):
+                return after_pre, zh
+            return "", zh
+        else:
+            # English title inside 《》
+            return inner, ""
+
+    if not _re.search(r'[一-鿿぀-ヿ가-힯]', name):
+        # Pure English — strip platform/edition suffixes
+        en = _re.split(r'[\(（]', name)[0].strip()
+        en = _re.sub(r'\s*[-–]\s*(PS[45]|PlayStation[45]?|中文版|繁體|簡體|英文|日文).*$',
+                     '', en, flags=_re.IGNORECASE).strip()
+        return en, ""
+
+    return "", name
+
+
+def _parse_ps_store_csv_bytes(data: bytes) -> List[dict]:
+    """
+    Parse PS Store export CSV (GBK-encoded) into normalized psn_library_games dicts.
+    PS Store columns: name, service_tier, platforms, product_id, product_url,
+                      image_url, is_active, first_seen_at
+    """
+    # Detect encoding
+    for enc in ("gbk", "utf-8-sig", "utf-8", "latin-1"):
+        try:
+            text = data.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = data.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text))
+    tier_map = {"ESSENTIAL": 1, "EXTRA": 2, "PREMIUM": 3}
+    rows = []
+    needs_translation: List[tuple[int, str]] = []  # (index, zh_name)
+
+    for row in reader:
+        raw_name = (row.get("name") or "").strip()
+        if not raw_name:
+            continue
+
+        title_en, title_zh = _extract_en_from_name(raw_name)
+
+        tier_raw = (row.get("service_tier") or "").strip().upper()
+        tier = tier_map.get(tier_raw, 2)
+
+        # Platforms: JSON array like ["PS4","PS5"] or comma-sep
+        plat_raw = (row.get("platforms") or "").strip()
+        try:
+            plat_list = _json.loads(plat_raw)
+            platforms = ",".join(plat_list) if isinstance(plat_list, list) else plat_raw
+        except Exception:
+            platforms = plat_raw.replace("|", ",")
+
+        # Dates
+        first_seen = (row.get("first_seen_at") or "").strip()
+        entry_date = None
+        for fmt in ("%Y/%m/%d %H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d", "%Y/%m/%d"):
+            try:
+                entry_date = _dt.strptime(first_seen, fmt).date().isoformat()
+                break
+            except ValueError:
+                continue
+
+        status = "active" if (row.get("is_active") or "").strip() == "1" else "removed"
+
+        normalized = {
+            "title_en": title_en,
+            "title_zh": title_zh,
+            "tier": str(tier),
+            "product_id": (row.get("product_id") or "").strip() or "",
+            "store_url": (row.get("product_url") or "").strip() or "",
+            "cover_url": (row.get("image_url") or "").strip() or "",
+            "platforms": platforms,
+            "entry_date": entry_date or "",
+            "status": status,
+            "region": "HK",
+        }
+        idx = len(rows)
+        rows.append(normalized)
+        if not title_en and title_zh:
+            needs_translation.append((idx, title_zh))
+
+    return rows, needs_translation
 
 
 # ---------------------------------------------------------------------------
@@ -1065,5 +1186,141 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return JSONResponse({"ok": 0, "err": 0})
         ok, err = await bulk_import_psn_games(rows)
         return JSONResponse({"ok": ok, "err": err})
+
+    @app.post("/psn-library/import-ps-store")
+    async def psn_library_import_ps_store(
+        request: Request,
+        file: UploadFile = File(...),
+        clear_first: str = Form(""),
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+        data = await file.read()
+        if not data:
+            return JSONResponse({"error": "empty file"}, status_code=400)
+
+        rows, needs_translation = _parse_ps_store_csv_bytes(data)
+        if not rows:
+            return JSONResponse({"error": "no rows parsed"}, status_code=400)
+
+        # AI batch-translate pure-Chinese titles (20 per batch)
+        ai_translated = 0
+        if needs_translation:
+            deepseek_key = await get_bot_config("deepseek_api_key")
+            claude_key   = await get_bot_config("claude_api_key")
+            if deepseek_key or claude_key:
+                batch_size = 20
+                for batch_start in range(0, len(needs_translation), batch_size):
+                    batch = needs_translation[batch_start:batch_start + batch_size]
+                    names_list = "\n".join(f'{i+1}. {zh}' for i, (_, zh) in enumerate(batch))
+                    prompt = (
+                        f"Translate these {len(batch)} Chinese video game titles to English. "
+                        f"Reply with ONLY a JSON array of strings in the same order:\n{names_list}"
+                    )
+                    try:
+                        translated: List[str] = []
+                        if deepseek_key:
+                            async with aiohttp.ClientSession() as s:
+                                async with s.post(
+                                    "https://api.deepseek.com/chat/completions",
+                                    headers={"Authorization": f"Bearer {deepseek_key}",
+                                             "Content-Type": "application/json"},
+                                    json={"model": "deepseek-chat",
+                                          "messages": [{"role": "user", "content": prompt}],
+                                          "max_tokens": 400, "temperature": 0},
+                                    timeout=aiohttp.ClientTimeout(total=30),
+                                ) as r:
+                                    if r.status == 200:
+                                        resp = await r.json()
+                                        text = resp["choices"][0]["message"]["content"].strip()
+                                        text = _re.sub(r"```[a-z]*\n?", "", text).strip("` \n")
+                                        translated = _json.loads(text)
+                        elif claude_key:
+                            import anthropic
+                            client = anthropic.AsyncAnthropic(api_key=claude_key)
+                            msg = await asyncio.wait_for(
+                                client.messages.create(
+                                    model="claude-haiku-4-5-20251001",
+                                    max_tokens=400,
+                                    messages=[{"role": "user", "content": prompt}],
+                                ),
+                                timeout=30,
+                            )
+                            text = msg.content[0].text.strip()
+                            text = _re.sub(r"```[a-z]*\n?", "", text).strip("` \n")
+                            translated = _json.loads(text)
+
+                        if isinstance(translated, list) and len(translated) == len(batch):
+                            for j, (row_idx, _) in enumerate(batch):
+                                en = str(translated[j]).strip()
+                                if en:
+                                    rows[row_idx]["title_en"] = en
+                                    ai_translated += 1
+                    except Exception:
+                        pass  # Continue without translation for this batch
+
+        if clear_first == "1":
+            async with get_session() as s:
+                from sqlalchemy import delete as _sa_delete
+                from bot.database import PsnLibraryGame as _PG
+                await s.execute(_sa_delete(_PG))
+                await s.commit()
+
+        ok, err = await bulk_import_psn_games(rows)
+        return JSONResponse({"imported": ok, "errors": err, "ai_translated": ai_translated})
+
+    @app.post("/settings/test-translate")
+    async def settings_test_translate(
+        request: Request,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        body = await request.json()
+        text = (body.get("text") or "").strip()
+        if not text:
+            return JSONResponse({"error": "empty"}, status_code=400)
+
+        deepseek_key = await get_bot_config("deepseek_api_key")
+        claude_key   = await get_bot_config("claude_api_key")
+        if not deepseek_key and not claude_key:
+            return JSONResponse({"error": "no AI key configured"})
+
+        prompt = (f"Reply with ONLY the official English title of this video game, "
+                  f"nothing else: {text}")
+        try:
+            if deepseek_key:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.deepseek.com/chat/completions",
+                        headers={"Authorization": f"Bearer {deepseek_key}",
+                                 "Content-Type": "application/json"},
+                        json={"model": "deepseek-chat",
+                              "messages": [{"role": "user", "content": prompt}],
+                              "max_tokens": 30, "temperature": 0},
+                        timeout=aiohttp.ClientTimeout(total=8),
+                    ) as r:
+                        if r.status == 200:
+                            data = await r.json()
+                            result = data["choices"][0]["message"]["content"].strip().strip('"').strip("'")
+                            return JSONResponse({"result": result, "provider": "DeepSeek"})
+            if claude_key:
+                import anthropic
+                client = anthropic.AsyncAnthropic(api_key=claude_key)
+                msg = await asyncio.wait_for(
+                    client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=30,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                    timeout=8,
+                )
+                result = msg.content[0].text.strip().strip('"').strip("'")
+                return JSONResponse({"result": result, "provider": "Claude Haiku"})
+        except Exception as e:
+            return JSONResponse({"error": str(e)})
+        return JSONResponse({"error": "translation failed"})
 
     return app

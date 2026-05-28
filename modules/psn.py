@@ -26,7 +26,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import TTLCache
-from bot.database import get_bot_config, get_group_settings, search_psn_games
+from bot.database import get_bot_config, get_group_settings, match_psn_game, search_psn_games
 from bot.logger import get_logger
 from bot.router import registry
 
@@ -36,8 +36,9 @@ log = get_logger(__name__)
 # Caches
 # ---------------------------------------------------------------------------
 
-game_cache  = TTLCache(ttl=3600, max_size=500)
-price_cache = TTLCache(ttl=3600, max_size=300)
+game_cache      = TTLCache(ttl=3600,  max_size=500)
+price_cache     = TTLCache(ttl=3600,  max_size=300)
+translate_cache = TTLCache(ttl=86400, max_size=2000)
 
 # ---------------------------------------------------------------------------
 # RAWG.io — game search & detail
@@ -92,8 +93,13 @@ async def get_game_detail(game_id: int) -> Optional[Dict]:
     return data
 
 
-def _get_ps_store_url(detail: Optional[Dict], game_name: str) -> str:
-    """Extract actual PS Store product page from RAWG detail, or fall back to HK search."""
+def _get_ps_store_url(detail: Optional[Dict], game_name: str, db_game=None) -> str:
+    """Extract PS Store URL: DB store_url → DB product_id → RAWG stores → HK search."""
+    if db_game:
+        if db_game.store_url:
+            return db_game.store_url
+        if db_game.product_id:
+            return f"https://store.playstation.com/zh-hant-hk/product/{db_game.product_id}"
     if detail:
         for store in detail.get("stores", []):
             slug = (store.get("store") or {}).get("slug", "")
@@ -105,9 +111,11 @@ def _get_ps_store_url(detail: Optional[Dict], game_name: str) -> str:
 
 
 def _format_game(item: Dict, detail: Optional[Dict] = None,
-                 store_url: Optional[str] = None) -> str:
+                 store_url: Optional[str] = None,
+                 title_zh: Optional[str] = None,
+                 developer_zh: Optional[str] = None) -> str:
     """Format core game card (without PS Plus status or price)."""
-    name = html.escape(item.get("name", "Unknown"))
+    name_en = html.escape(item.get("name", "Unknown"))
     released = item.get("released", "")
     rating = item.get("rating", 0)
     metacritic = item.get("metacritic")
@@ -121,25 +129,36 @@ def _format_game(item: Dict, detail: Optional[Dict] = None,
             ps_platforms.append(pname)
     ps_platforms = sorted(set(ps_platforms))
 
-    vendor = ""
+    vendor_en = ""
     if detail:
         devs = [d["name"] for d in detail.get("developers", [])[:2]]
         pubs = [p["name"] for p in detail.get("publishers", [])[:1]]
         if devs and pubs and pubs[0] not in devs:
-            vendor = html.escape(" / ".join(devs) + f"  |  {pubs[0]}")
+            vendor_en = " / ".join(devs) + f"  |  {pubs[0]}"
         elif devs:
-            vendor = html.escape(" / ".join(devs))
+            vendor_en = " / ".join(devs)
         elif pubs:
-            vendor = html.escape(pubs[0])
+            vendor_en = pubs[0]
 
     if store_url is None:
         store_url = _get_ps_store_url(detail, item.get("name", ""))
 
-    lines = [f"🎮 <b>{name}</b>"]
+    # Bilingual name: "中文名 ( English Name )" or just English
+    if title_zh and title_zh.strip() and title_zh.strip() != name_en:
+        name_line = f"🎮 <b>{html.escape(title_zh.strip())} ( {name_en} )</b>"
+    else:
+        name_line = f"🎮 <b>{name_en}</b>"
+
+    lines = [name_line]
     if ps_platforms:
         lines.append(f"🕹 {' / '.join(ps_platforms)}")
-    if vendor:
-        lines.append(f"🏢 {vendor}")
+
+    # Bilingual developer
+    if developer_zh and vendor_en and developer_zh.strip() != vendor_en.strip():
+        lines.append(f"🏢 {html.escape(developer_zh.strip())} ( {html.escape(vendor_en)} )")
+    elif vendor_en:
+        lines.append(f"🏢 {html.escape(vendor_en)}")
+
     if released:
         lines.append(f"📅 {released}")
 
@@ -243,6 +262,70 @@ async def _translate_game_name(query: str) -> Optional[str]:
         return None
 
 
+async def _translate_game_data_to_zh(en_name: str, en_developer: str = "") -> Tuple[Optional[str], Optional[str]]:
+    """Translate English game name + developer to Chinese in one AI call. Cached 24h."""
+    cache_key = f"zh:{en_name}|{en_developer}"
+    cached = await translate_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    prompt = (
+        f'Translate this video game info to Simplified Chinese. '
+        f'Reply with ONLY a JSON object: {{"name_zh": "...", "dev_zh": "..."}}. '
+        f'If already Chinese or unknown, keep the original. '
+        f'Game: "{en_name}", Developer: "{en_developer}"'
+    )
+
+    result: Tuple[Optional[str], Optional[str]] = (None, None)
+
+    deepseek_key = await get_bot_config("deepseek_api_key")
+    if deepseek_key:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post(
+                    "https://api.deepseek.com/chat/completions",
+                    headers={"Authorization": f"Bearer {deepseek_key}",
+                             "Content-Type": "application/json"},
+                    json={"model": "deepseek-chat",
+                          "messages": [{"role": "user", "content": prompt}],
+                          "max_tokens": 80, "temperature": 0},
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as r:
+                    if r.status == 200:
+                        data = await r.json()
+                        text = data["choices"][0]["message"]["content"].strip()
+                        # Extract JSON from possible code blocks
+                        text = re.sub(r"```[a-z]*\n?", "", text).strip("` \n")
+                        parsed = json.loads(text)
+                        result = (parsed.get("name_zh") or None, parsed.get("dev_zh") or None)
+        except Exception as e:
+            log.warning("DeepSeek zh translation failed", error=str(e))
+
+    if result == (None, None):
+        api_key = await get_bot_config("claude_api_key")
+        if api_key:
+            try:
+                import anthropic
+                client = anthropic.AsyncAnthropic(api_key=api_key)
+                msg = await asyncio.wait_for(
+                    client.messages.create(
+                        model="claude-haiku-4-5-20251001",
+                        max_tokens=80,
+                        messages=[{"role": "user", "content": prompt}],
+                    ),
+                    timeout=8,
+                )
+                text = msg.content[0].text.strip()
+                text = re.sub(r"```[a-z]*\n?", "", text).strip("` \n")
+                parsed = json.loads(text)
+                result = (parsed.get("name_zh") or None, parsed.get("dev_zh") or None)
+            except Exception as e:
+                log.warning("Claude zh translation failed", error=str(e))
+
+    await translate_cache.set(cache_key, result)
+    return result
+
+
 async def _smart_search(query: str) -> Tuple[Optional[List[Dict]], str]:
     """For CJK queries, translate to English first; returns (items, final_query)."""
     if _has_cjk(query):
@@ -297,19 +380,31 @@ async def on_game_select(update: Update, context) -> None:
     item = items[idx]
     game_name = item.get("name", "")
 
-    detail_coro = get_game_detail(item["id"]) if item.get("id") else asyncio.sleep(0)
-    price_coro  = asyncio.wait_for(search_psprices(game_name), timeout=12)
-    psplus_coro = search_psn_games(game_name)
+    detail_coro  = get_game_detail(item["id"]) if item.get("id") else asyncio.sleep(0)
+    price_coro   = asyncio.wait_for(search_psprices(game_name), timeout=12)
+    psplus_coro  = search_psn_games(game_name)
+    dbmatch_coro = match_psn_game(game_name)
 
-    detail, price_res, local_games = await asyncio.gather(
-        detail_coro, price_coro, psplus_coro, return_exceptions=True
+    detail, price_res, local_games, db_game = await asyncio.gather(
+        detail_coro, price_coro, psplus_coro, dbmatch_coro, return_exceptions=True
     )
     if isinstance(detail, Exception):     detail = None
     if isinstance(price_res, Exception):  price_res = None
     if isinstance(local_games, Exception): local_games = []
+    if isinstance(db_game, Exception):    db_game = None
 
-    store_url = _get_ps_store_url(detail, game_name)
-    text = _format_game(item, detail, store_url=store_url)
+    developer_en = ""
+    if detail:
+        devs = [d["name"] for d in detail.get("developers", [])[:1]]
+        developer_en = devs[0] if devs else ""
+
+    title_zh, developer_zh = await _translate_game_data_to_zh(game_name, developer_en)
+    if db_game and db_game.title_zh:
+        title_zh = db_game.title_zh
+
+    store_url = _get_ps_store_url(detail, game_name, db_game=db_game)
+    text = _format_game(item, detail, store_url=store_url,
+                        title_zh=title_zh, developer_zh=developer_zh)
     text += "\n" + _format_psplus_status(local_games)
     if isinstance(price_res, list) and price_res:
         price_line = _format_price_line(price_res)
@@ -469,19 +564,31 @@ async def cmd_game(update: Update, context) -> None:
 
             await status.edit_text("⏳ 正在获取详情…")
 
-            detail_coro = get_game_detail(top["id"]) if top.get("id") else asyncio.sleep(0)
-            detail, price_res, local_games = await asyncio.gather(
+            detail_coro  = get_game_detail(top["id"]) if top.get("id") else asyncio.sleep(0)
+            detail, price_res, local_games, db_game = await asyncio.gather(
                 detail_coro,
                 asyncio.wait_for(search_psprices(game_name), timeout=12),
                 search_psn_games(game_name),
+                match_psn_game(game_name),
                 return_exceptions=True,
             )
             if isinstance(detail, Exception):     detail = None
             if isinstance(price_res, Exception):  price_res = None
             if isinstance(local_games, Exception): local_games = []
+            if isinstance(db_game, Exception):    db_game = None
 
-            store_url = _get_ps_store_url(detail, game_name)
-            text = _format_game(top, detail, store_url=store_url)
+            developer_en = ""
+            if detail:
+                devs = [d["name"] for d in detail.get("developers", [])[:1]]
+                developer_en = devs[0] if devs else ""
+
+            title_zh, developer_zh = await _translate_game_data_to_zh(game_name, developer_en)
+            if db_game and db_game.title_zh:
+                title_zh = db_game.title_zh
+
+            store_url = _get_ps_store_url(detail, game_name, db_game=db_game)
+            text = _format_game(top, detail, store_url=store_url,
+                                title_zh=title_zh, developer_zh=developer_zh)
             text += "\n" + _format_psplus_status(local_games)
             if isinstance(price_res, list) and price_res:
                 price_line = _format_price_line(price_res)

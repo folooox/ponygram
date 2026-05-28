@@ -174,6 +174,59 @@
       .btn-sm { padding: .35rem .65rem; }
       .form-check-input { transform: scale(1.1); }
     }
+
+    /* ── Light mode overrides ──────────────────────────────────── */
+    [data-bs-theme="light"] body { background: #f1f5f9; color: #1e293b; }
+
+    /* Info/hint panels with hardcoded dark backgrounds */
+    [data-bs-theme="light"] [style*="1a2535"],
+    [data-bs-theme="light"] [style*="161b27"],
+    [data-bs-theme="light"] [style*="0d1017"] {
+      background: #eff6ff !important;
+      border-color: #93c5fd !important;
+    }
+    [data-bs-theme="light"] [style*="1e3a5f"] {
+      background: #dbeafe !important;
+      border-color: #60a5fa !important;
+    }
+
+    /* Form controls */
+    [data-bs-theme="light"] .form-control,
+    [data-bs-theme="light"] .form-select {
+      background-color: #ffffff !important;
+      color: #1e293b !important;
+      border-color: #cbd5e1 !important;
+    }
+    [data-bs-theme="light"] .form-control::placeholder { color: #94a3b8 !important; }
+    [data-bs-theme="light"] .form-control:focus,
+    [data-bs-theme="light"] .form-select:focus {
+      border-color: #3b82f6 !important;
+      box-shadow: 0 0 0 .2rem rgba(59,130,246,.25) !important;
+    }
+
+    /* Bootstrap utility class overrides */
+    [data-bs-theme="light"] .bg-dark       { background-color: #f1f5f9 !important; }
+    [data-bs-theme="light"] .text-light    { color: #1e293b !important; }
+    [data-bs-theme="light"] .border-secondary { border-color: #e2e8f0 !important; }
+    [data-bs-theme="light"] .font-monospace { color: #1e293b !important; }
+
+    /* Tables */
+    [data-bs-theme="light"] .table        { color: #1e293b; }
+    [data-bs-theme="light"] .table-dark   { --bs-table-bg: #f8fafc; --bs-table-color: #1e293b; color: #1e293b; }
+    [data-bs-theme="light"] .table-hover > tbody > tr:hover > * { background-color: #e9f0fb; }
+    [data-bs-theme="light"] .table-striped > tbody > tr:nth-of-type(odd) > * { background-color: #f8fafc; }
+
+    /* Sidebar active link keeps white text */
+    [data-bs-theme="light"] #sidebar .nav-link.active { color: #fff; }
+
+    /* Modal */
+    [data-bs-theme="light"] .modal-content { background: #ffffff !important; color: #1e293b; }
+    [data-bs-theme="light"] .modal-header,
+    [data-bs-theme="light"] .modal-footer { border-color: #e2e8f0 !important; }
+    [data-bs-theme="light"] .btn-close-white { filter: invert(1) !important; }
+
+    /* Badge/inline code */
+    [data-bs-theme="light"] code { background: #e2e8f0; color: #be185d; padding: .1em .3em; border-radius: .25em; }
   </style>
   <script>
     /* Apply saved theme before first paint to prevent flash */

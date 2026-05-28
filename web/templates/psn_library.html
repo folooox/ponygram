@@ -145,6 +145,34 @@
 </nav>
 {% endif %}
 
+<!-- PS Store CSV import -->
+<div class="card mb-3" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body">
+    <h6 class="fw-semibold mb-2">
+      <i class="bi bi-file-earmark-arrow-up me-1 text-info"></i>
+      <span data-zh="PS Store 导出 CSV 导入" data-en="Import from PS Store CSV">PS Store 导出 CSV 导入</span>
+    </h6>
+    <p class="text-secondary small mb-3">支持 PS Store 后台导出格式（GBK 编码）。自动提取英文名；纯中文标题通过 AI 翻译（需配置 DeepSeek 或 Claude API）。</p>
+    <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+      <input type="file" id="psStoreCsvFile" accept=".csv" class="form-control form-control-sm bg-dark border-secondary text-light" style="max-width:280px">
+      <div class="form-check mb-0">
+        <input class="form-check-input" type="checkbox" id="clearFirst" value="1">
+        <label class="form-check-label small" for="clearFirst">导入前清空数据库</label>
+      </div>
+      <button class="btn btn-sm btn-info text-white" onclick="importPsStore()">
+        <i class="bi bi-cloud-upload me-1"></i>导入
+      </button>
+    </div>
+    <div id="psStoreProgress" class="small" style="display:none">
+      <div class="d-flex align-items-center gap-2">
+        <div class="spinner-border spinner-border-sm text-info" role="status"></div>
+        <span id="psStoreProgressText">处理中，AI 翻译可能需要数分钟…</span>
+      </div>
+    </div>
+    <div id="psStoreResult" class="small mt-2" style="display:none"></div>
+  </div>
+</div>
+
 <!-- Bulk CSV import -->
 <div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
   <div class="card-body">
@@ -326,6 +354,47 @@ function updateCoverPreview(url) {
     preview.style.display = 'block';
   } else {
     preview.style.display = 'none';
+  }
+}
+
+async function importPsStore() {
+  const fileInput = document.getElementById('psStoreCsvFile');
+  const clearFirst = document.getElementById('clearFirst').checked ? '1' : '';
+  const progress = document.getElementById('psStoreProgress');
+  const result = document.getElementById('psStoreResult');
+
+  if (!fileInput.files || !fileInput.files[0]) {
+    result.style.display = '';
+    result.innerHTML = '<span class="text-warning">请先选择 CSV 文件。</span>';
+    return;
+  }
+
+  progress.style.display = '';
+  result.style.display = 'none';
+
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+  if (clearFirst) formData.append('clear_first', clearFirst);
+
+  try {
+    const r = await fetch('/psn-library/import-ps-store', {
+      method: 'POST',
+      body: formData
+    });
+    const data = await r.json();
+    progress.style.display = 'none';
+    result.style.display = '';
+    if (data.error) {
+      result.innerHTML = `<span class="text-danger"><i class="bi bi-x-circle me-1"></i>${data.error}</span>`;
+    } else {
+      const aiNote = data.ai_translated > 0 ? `，AI 翻译 ${data.ai_translated} 条` : '';
+      result.innerHTML = `<span class="text-success"><i class="bi bi-check-circle me-1"></i>成功导入 ${data.imported} 条，失败 ${data.errors} 条${aiNote}</span>`;
+      if (data.imported > 0) setTimeout(() => location.reload(), 1800);
+    }
+  } catch(e) {
+    progress.style.display = 'none';
+    result.style.display = '';
+    result.innerHTML = `<span class="text-danger">请求失败: ${e}</span>`;
   }
 }
 
