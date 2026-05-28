@@ -514,16 +514,6 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 "setup_hint": "rawg.io/apidocs → Get API Key (free, no card)",
                 "format_hint": "40 hex chars",
             },
-            "psn": {
-                "label": "PSN (trophies)",
-                "icon": "bi-person-badge",
-                "status": "ok" if configs.get("psn_npsso") else "missing",
-                "detail": "NPSSO token configured" if configs.get("psn_npsso") else "Not configured",
-                "testable": bool(configs.get("psn_npsso")),
-                "setup_url": "https://ca.account.sony.com/api/v1/ssocookie",
-                "setup_hint": "Log in to store.playstation.com, then open ca.account.sony.com/api/v1/ssocookie and copy the npsso value",
-                "format_hint": "64 alphanumeric chars",
-            },
             "ytdlp": {
                 "label": "yt-dlp (media)",
                 "icon": "bi-download",
@@ -688,31 +678,6 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 return JSONResponse({"status": "error", "detail": "Invalid API key"})
             else:
                 return JSONResponse({"status": "error", "detail": f"HTTP {status}"})
-
-        elif service == "psn":
-            npsso = configs.get("psn_npsso")
-            if not npsso:
-                return JSONResponse({"status": "missing", "detail": "NPSSO token not configured"})
-            try:
-                async with aiohttp.ClientSession() as s:
-                    async with s.post(
-                        "https://ca.account.sony.com/api/authz/v3/oauth/token",
-                        data={"grant_type": "sso_cookie", "npsso": npsso},
-                        headers={
-                            "Content-Type": "application/x-www-form-urlencoded",
-                            "Cookie": f"npsso={npsso}",
-                        },
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as r:
-                        body = await r.json()
-                        if r.status == 200 and body.get("access_token"):
-                            return JSONResponse({"status": "ok", "detail": "NPSSO token is valid — access token obtained"})
-                        elif r.status in (400, 401):
-                            return JSONResponse({"status": "error", "detail": "NPSSO token is expired or invalid — please refresh it"})
-                        else:
-                            return JSONResponse({"status": "error", "detail": f"HTTP {r.status}: {str(body)[:100]}"})
-            except Exception as e:
-                return JSONResponse({"status": "error", "detail": str(e)[:120]})
 
         elif service == "ytdlp":
             try:
@@ -984,23 +949,11 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         form = await request.form()
-        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key", "psn_npsso"]
-        cookie_keys = [
-            "cookie_instagram", "cookie_twitter", "cookie_bilibili",
-            "cookie_douyin", "cookie_tiktok", "cookie_kuaishou",
-            "cookie_xiaohongshu", "cookie_youtube",
-        ]
+        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key"]
         for key in api_keys:
             val = form.get(key, "").strip()
             if val:
                 await set_bot_config(key, val)
-        for key in cookie_keys:
-            val = form.get(key, "").strip()
-            if val == "__CLEAR__":
-                await delete_bot_config(key)
-            elif val:
-                normalized, count = normalize_cookie(val)
-                await set_bot_config(key, normalized if normalized else val)
 
         return RedirectResponse(url="/settings?saved=1", status_code=303)
 
