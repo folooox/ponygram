@@ -25,6 +25,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
+from bot.ai import deepseek_call
 from bot.cache import TTLCache
 from bot.database import get_bot_config, get_group_settings, match_psn_game, search_psn_games
 from bot.logger import get_logger
@@ -302,28 +303,18 @@ async def _translate_game_data_to_zh(en_name: str, en_developer: str = "") -> Tu
 
     result: Tuple[Optional[str], Optional[str]] = (None, None)
 
-    deepseek_key = await get_bot_config("deepseek_api_key")
-    if deepseek_key:
+    ds_text = await deepseek_call(
+        "psn", "translate",
+        [{"role": "user", "content": prompt}],
+        max_tokens=80,
+    )
+    if ds_text:
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post(
-                    "https://api.deepseek.com/chat/completions",
-                    headers={"Authorization": f"Bearer {deepseek_key}",
-                             "Content-Type": "application/json"},
-                    json={"model": "deepseek-chat",
-                          "messages": [{"role": "user", "content": prompt}],
-                          "max_tokens": 80, "temperature": 0},
-                    timeout=aiohttp.ClientTimeout(total=8),
-                ) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        text = data["choices"][0]["message"]["content"].strip()
-                        # Extract JSON from possible code blocks
-                        text = re.sub(r"```[a-z]*\n?", "", text).strip("` \n")
-                        parsed = json.loads(text)
-                        result = (parsed.get("name_zh") or None, parsed.get("dev_zh") or None)
+            text = re.sub(r"```[a-z]*\n?", "", ds_text).strip("` \n")
+            parsed = json.loads(text)
+            result = (parsed.get("name_zh") or None, parsed.get("dev_zh") or None)
         except Exception as e:
-            log.warning("DeepSeek zh translation failed", error=str(e))
+            log.warning("DeepSeek zh translation parse failed", error=str(e))
 
     if result == (None, None):
         api_key = await get_bot_config("claude_api_key")
