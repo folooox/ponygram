@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}AI 统计 — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="fw-bold mb-0">AI 调用统计</h4>
+  <span class="badge bg-secondary ms-2">{{ stats|length }} 操作类型</span>
+</div>
+
+<!-- Summary table -->
+<div class="card mb-4" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body p-0">
+    <h6 class="fw-semibold text-secondary text-uppercase px-3 pt-3 pb-2" style="font-size:.75rem;letter-spacing:.05em">
+      <i class="bi bi-bar-chart me-1"></i> 模块汇总
+    </h6>
+    {% if stats %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0" style="font-size:.875rem">
+        <thead>
+          <tr class="text-secondary" style="font-size:.75rem;letter-spacing:.04em">
+            <th class="ps-3">模块</th>
+            <th>操作</th>
+            <th class="text-end">调用次数</th>
+            <th class="text-end">Token 总量</th>
+            <th class="text-end">成功率</th>
+            <th class="pe-3">最后调用</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in stats %}
+          <tr>
+            <td class="ps-3">
+              <span class="badge rounded-pill bg-primary bg-opacity-25 text-primary-emphasis">{{ row.module }}</span>
+            </td>
+            <td><code class="small">{{ row.operation }}</code></td>
+            <td class="text-end fw-semibold">{{ row.total_calls }}</td>
+            <td class="text-end text-secondary">{{ "{:,}".format(row.total_tokens) }}</td>
+            <td class="text-end">
+              {% set rate = (row.success_count / row.total_calls * 100)|int if row.total_calls > 0 else 0 %}
+              <span class="badge {% if rate >= 90 %}bg-success{% elif rate >= 60 %}bg-warning text-dark{% else %}bg-danger{% endif %}">
+                {{ rate }}%
+              </span>
+            </td>
+            <td class="pe-3 text-secondary" style="font-size:.8rem">
+              {{ row.last_called.strftime("%m-%d %H:%M") if row.last_called else "—" }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5 text-secondary">
+      <i class="bi bi-robot fs-2 d-block mb-2"></i>
+      暂无 AI 调用记录
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Recent log -->
+<div class="card" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body p-0">
+    <h6 class="fw-semibold text-secondary text-uppercase px-3 pt-3 pb-2" style="font-size:.75rem;letter-spacing:.05em">
+      <i class="bi bi-list-ul me-1"></i> 最近调用明细（最多 100 条）
+    </h6>
+    {% if recent %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0" style="font-size:.8rem">
+        <thead>
+          <tr class="text-secondary" style="font-size:.72rem;letter-spacing:.04em">
+            <th class="ps-3">时间</th>
+            <th>模块</th>
+            <th>操作</th>
+            <th>模型</th>
+            <th class="text-end">Prompt</th>
+            <th class="text-end">Output</th>
+            <th class="pe-3 text-center">状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in recent %}
+          <tr>
+            <td class="ps-3 text-secondary">{{ row.called_at.strftime("%m-%d %H:%M:%S") }}</td>
+            <td><span class="badge bg-primary bg-opacity-25 text-primary-emphasis">{{ row.module }}</span></td>
+            <td><code>{{ row.operation }}</code></td>
+            <td class="text-secondary">{{ row.model or "—" }}</td>
+            <td class="text-end text-secondary">{{ row.prompt_tokens or 0 }}</td>
+            <td class="text-end text-secondary">{{ row.output_tokens or 0 }}</td>
+            <td class="pe-3 text-center">
+              {% if row.success %}
+              <i class="bi bi-check-circle-fill text-success"></i>
+              {% else %}
+              <i class="bi bi-x-circle-fill text-danger"></i>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-4 text-secondary small">暂无记录</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

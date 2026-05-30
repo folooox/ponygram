@@ -10,6 +10,9 @@ rss_feeds           — per-chat RSS subscriptions
 rss_sent            — deduplication log of pushed entries
 bot_config          — key-value store for bot-level settings (API keys, etc.)
 psn_library_games   — PS Plus game library (tier 1=Essential, 2=Extra, 3=Premium)
+web_feeds           — webpage subscriptions for article push notifications
+web_sent            — deduplication log of pushed article URLs
+ai_usage_log        — log of all DeepSeek API calls for the stats panel
 """
 
 from __future__ import annotations
@@ -177,6 +180,44 @@ class PsnColumnsConfig(Base):
     is_core      = Column(Boolean, default=False)        # True = fixed DB column
     visible      = Column(Boolean, default=True)
     sort_order   = Column(Integer, default=100)
+
+
+class WebFeed(Base):
+    """Webpage subscriptions — bot periodically fetches and pushes new articles."""
+    __tablename__ = "web_feeds"
+
+    id           = Column(Integer, primary_key=True, autoincrement=True)
+    chat_id      = Column(BigInteger, nullable=False, index=True)
+    url          = Column(Text, nullable=False)
+    label        = Column(String(128), nullable=True)
+    added_by     = Column(BigInteger, nullable=True)
+    added_at     = Column(DateTime, default=datetime.utcnow)
+    paused       = Column(Boolean, default=False)
+    last_fetched = Column(DateTime, nullable=True)
+
+
+class WebSent(Base):
+    """Deduplication: article URLs already pushed per web feed."""
+    __tablename__ = "web_sent"
+
+    id       = Column(Integer, primary_key=True, autoincrement=True)
+    feed_id  = Column(Integer, nullable=False, index=True)
+    url_hash = Column(String(64), nullable=False)   # sha256 of article URL
+    sent_at  = Column(DateTime, default=datetime.utcnow)
+
+
+class AiUsageLog(Base):
+    """Log of all AI API calls for usage statistics in the web panel."""
+    __tablename__ = "ai_usage_log"
+
+    id            = Column(Integer, primary_key=True, autoincrement=True)
+    module        = Column(String(64), nullable=False)   # e.g. "psn", "article"
+    operation     = Column(String(64), nullable=False)   # e.g. "translate", "summarize"
+    model         = Column(String(64), nullable=True)    # e.g. "deepseek-chat"
+    prompt_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
+    success       = Column(Boolean, default=True)
+    called_at     = Column(DateTime, default=datetime.utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -915,3 +956,153 @@ async def bulk_import_psn_games(rows: List[dict]) -> tuple[int, int]:
         except Exception:
             err += 1
     return ok, err
+
+
+# ---------------------------------------------------------------------------
+# WebFeed helpers
+# ---------------------------------------------------------------------------
+
+async def add_web_feed(chat_id: int, url: str, label: str = "",
+                       added_by: int = 0) -> "WebFeed":
+    async with get_session() as s:
+        feed = WebFeed(chat_id=chat_id, url=url,
+                       label=label or None, added_by=added_by)
+        s.add(feed)
+        await s.commit()
+        await s.refresh(feed)
+        return feed
+
+
+async def remove_web_feed(feed_id: int, chat_id: int) -> bool:
+    async with get_session() as s:
+        row = await s.get(WebFeed, feed_id)
+        if row and row.chat_id == chat_id:
+            await s.delete(row)
+            await s.commit()
+            return True
+        return False
+
+
+async def get_web_feeds(chat_id: int) -> List["WebFeed"]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(WebFeed).where(WebFeed.chat_id == chat_id).order_by(WebFeed.id)
+        )
+        return list(result.scalars().all())
+
+
+async def get_all_active_web_feeds() -> List["WebFeed"]:
+    async with get_session() as s:
+        result = await s.execute(
+            select(WebFeed).where(WebFeed.paused == False).order_by(WebFeed.id)  # noqa: E712
+        )
+        return list(result.scalars().all())
+
+
+async def pause_web_feed(feed_id: int, chat_id: int, paused: bool) -> bool:
+    async with get_session() as s:
+        row = await s.get(WebFeed, feed_id)
+        if row and row.chat_id == chat_id:
+            row.paused = paused
+            await s.commit()
+            return True
+        return False
+
+
+async def mark_web_feed_fetched(feed_id: int) -> None:
+    async with get_session() as s:
+        row = await s.get(WebFeed, feed_id)
+        if row:
+            row.last_fetched = datetime.utcnow()
+            await s.commit()
+
+
+async def is_url_sent(feed_id: int, url_hash: str) -> bool:
+    async with get_session() as s:
+        result = await s.execute(
+            select(WebSent).where(
+                WebSent.feed_id == feed_id,
+                WebSent.url_hash == url_hash,
+            ).limit(1)
+        )
+        return result.scalar() is not None
+
+
+async def mark_url_sent(feed_id: int, url_hash: str) -> None:
+    async with get_session() as s:
+        s.add(WebSent(feed_id=feed_id, url_hash=url_hash))
+        await s.commit()
+
+
+async def prune_web_sent(feed_id: int, keep: int = 200) -> None:
+    async with get_session() as s:
+        result = await s.execute(
+            select(WebSent.id)
+            .where(WebSent.feed_id == feed_id)
+            .order_by(WebSent.sent_at.desc())
+            .offset(keep)
+        )
+        old_ids = [r[0] for r in result.fetchall()]
+        if old_ids:
+            await s.execute(delete(WebSent).where(WebSent.id.in_(old_ids)))
+            await s.commit()
+
+
+# ---------------------------------------------------------------------------
+# AiUsageLog helpers
+# ---------------------------------------------------------------------------
+
+async def log_ai_usage(
+    module: str,
+    operation: str,
+    model: str,
+    prompt_tokens: int = 0,
+    output_tokens: int = 0,
+    success: bool = True,
+) -> None:
+    async with get_session() as s:
+        s.add(AiUsageLog(
+            module=module, operation=operation, model=model,
+            prompt_tokens=prompt_tokens, output_tokens=output_tokens,
+            success=success,
+        ))
+        await s.commit()
+
+
+async def get_ai_usage_stats() -> List[dict]:
+    """Return per-module+operation aggregated stats."""
+    from sqlalchemy import case
+    async with get_session() as s:
+        result = await s.execute(
+            select(
+                AiUsageLog.module,
+                AiUsageLog.operation,
+                func.count(AiUsageLog.id).label("total_calls"),
+                func.sum(AiUsageLog.prompt_tokens + AiUsageLog.output_tokens).label("total_tokens"),
+                func.sum(case((AiUsageLog.success == True, 1), else_=0)).label("success_count"),  # noqa: E712
+                func.max(AiUsageLog.called_at).label("last_called"),
+            )
+            .group_by(AiUsageLog.module, AiUsageLog.operation)
+            .order_by(AiUsageLog.module, AiUsageLog.operation)
+        )
+        rows = result.fetchall()
+        return [
+            {
+                "module": r.module,
+                "operation": r.operation,
+                "total_calls": r.total_calls,
+                "total_tokens": r.total_tokens or 0,
+                "success_count": r.success_count or 0,
+                "last_called": r.last_called,
+            }
+            for r in rows
+        ]
+
+
+async def get_ai_usage_log(limit: int = 100) -> List["AiUsageLog"]:
+    """Return the most recent AI usage log entries."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(AiUsageLog).order_by(AiUsageLog.called_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())

@@ -48,6 +48,8 @@ from bot.database import (
     delete_bot_config,
     delete_psn_column,
     delete_psn_game,
+    get_ai_usage_log,
+    get_ai_usage_stats,
     get_all_bot_configs,
     get_all_rss_feeds,
     get_bot_config,
@@ -1444,5 +1446,28 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         except Exception as e:
             return JSONResponse({"error": str(e)})
         return JSONResponse({"error": "translation failed"})
+
+    # -----------------------------------------------------------------------
+    # AI usage statistics
+    # -----------------------------------------------------------------------
+
+    @app.get("/ai-stats")
+    async def ai_stats_page(
+        request: Request,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        stats  = await get_ai_usage_stats()
+        recent = await get_ai_usage_log(100)
+        return templates.TemplateResponse(
+            "ai_stats.html",
+            {
+                "request": request,
+                "active":  "ai_stats",
+                "stats":   stats,
+                "recent":  recent,
+            },
+        )
 
     return app
