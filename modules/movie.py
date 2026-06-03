@@ -18,6 +18,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import movie_cache
+from bot.components import Component, ConfigField, register_component, require_module
 from bot.database import get_bot_config
 from bot.logger import get_logger
 from bot.router import registry
@@ -212,10 +213,32 @@ async def cmd_tv(update: Update, context) -> None:
     await _cmd_search(update, context, "tv")
 
 
+_COMPONENT = Component(
+    id="movie",
+    name="影视搜索",
+    icon="bi-film",
+    description="/movie /tv 及 inline 影视搜索，数据来自 TMDB。",
+    config_keys=[
+        ConfigField(
+            key="tmdb_api_key",
+            label="TMDB API Key",
+            kind="secret",
+            help='注册 themoviedb.org → 账号设置 → API → 申请 Developer Key。格式：32 位十六进制。',
+            placeholder="32位十六进制",
+            test_service="tmdb",
+            link="https://www.themoviedb.org/settings/api",
+            link_label="themoviedb.org",
+        ),
+    ],
+    order=30,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     registry.register_command("movie", cmd_movie, "搜索电影 <片名>")
     registry.register_command("tv", cmd_tv, "搜索剧集 <剧名>")
     application.add_handler(CallbackQueryHandler(on_movie_select, pattern=r"^movie_sel:"))
-    application.add_handler(CommandHandler("movie", cmd_movie))
-    application.add_handler(CommandHandler("tv", cmd_tv))
+    application.add_handler(CommandHandler("movie", require_module("movie")(cmd_movie)))
+    application.add_handler(CommandHandler("tv", require_module("movie")(cmd_tv)))
     log.info("movie module loaded")

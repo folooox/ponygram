@@ -27,6 +27,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.ai import deepseek_call
 from bot.cache import TTLCache
+from bot.components import Component, ConfigField, register_component, require_module
 from bot.database import get_bot_config, get_group_settings, match_psn_game, search_psn_games
 from bot.logger import get_logger
 from bot.router import registry
@@ -719,10 +720,32 @@ async def cmd_psprice(update: Update, context) -> None:
 # Module setup
 # ---------------------------------------------------------------------------
 
+_COMPONENT = Component(
+    id="psn",
+    name="PlayStation 游戏",
+    icon="bi-controller",
+    description="/game /psprice 及 inline 游戏搜索，数据来自 RAWG.io。中文游戏名翻译使用全局 AI Key。",
+    config_keys=[
+        ConfigField(
+            key="rawg_api_key",
+            label="RAWG.io API Key",
+            kind="secret",
+            help='前往 rawg.io/apidocs → Get API Key 免费注册（无需信用卡）。格式：40 位十六进制 · 免费额度 200,000 次/月。',
+            placeholder="40位十六进制",
+            test_service="rawg",
+            link="https://rawg.io/apidocs",
+            link_label="rawg.io/apidocs",
+        ),
+    ],
+    order=50,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     registry.register_command("game",    cmd_game,    "搜索 PS4/PS5 游戏信息")
     registry.register_command("psprice", cmd_psprice, "查询游戏 PS Store HK 价格")
-    application.add_handler(CommandHandler("game",    cmd_game))
-    application.add_handler(CommandHandler("psprice", cmd_psprice))
+    application.add_handler(CommandHandler("game",    require_module("psn")(cmd_game)))
+    application.add_handler(CommandHandler("psprice", require_module("psn")(cmd_psprice)))
     application.add_handler(CallbackQueryHandler(on_game_select, pattern=r"^game_sel:"))
     log.info("psn module loaded")

@@ -10,6 +10,8 @@ silently does nothing for unsupported platforms or failures.
 Only active groups (is_active=True) get URL processing.
 Private chats always get URL processing.
 Per-group dlmode_enabled toggle (default True) controls whether parsing runs.
+Per-group media_del_original toggle (default True) controls whether the user's
+original link message is deleted after the parsed media is sent.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
 
+from bot.components import Component, ConfigField, is_module_enabled, register_component
 from bot.database import get_group_settings
 from bot.logger import get_logger
 from bot.telegraph import (
@@ -421,28 +424,60 @@ def _get_files(dr, skip_video_path: bool = False) -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
-def _make_caption(title: str, content: str, url: str) -> str:
+def _make_caption(
+    title: str,
+    content: str,
+    url: str,
+    bot_username: str = "",
+    *,
+    limit: int = 1024,
+    extra: str = "",
+) -> str:
+    """Build an HTML caption that always fits within ``limit`` characters.
+
+    Title and content are HTML-escaped, and the variable-length content block is
+    trimmed so the closing ``</blockquote>`` tag, the ``Source`` link and the
+    ``Share Via @bot`` footer are never sliced off (which corrupts the HTML and
+    makes Telegram reject the message with "can't find end tag …").
+    """
     link_icon = (
         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
         if _LINK_EMOJI_ID else "🔗"
     )
-    lines: list[str] = []
-    if title:
-        lines.append(f"<b>{title[:200]}</b>")
+    via = f" | Share Via @{bot_username}" if bot_username else ""
+    footer = f'\n{link_icon} <a href="{url}">Source</a>{via}'
+    tail = footer + (extra or "")
+
+    title = (title or "").strip()
+    head = f"<b>{html.escape(title[:200])}</b>\n" if title else ""
+
+    block = ""
+    content = (content or "").strip()
     if content:
-        if len(content) > 300:
-            lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
-        else:
-            lines.append(content)
-    lines.append(f'\n{link_icon} <a href="{url}">Source</a>')
-    return "\n".join(lines)
+        expandable = len(content) > 300
+        open_tag = "<blockquote expandable>" if expandable else ""
+        close_tag = "</blockquote>" if expandable else ""
+        room = limit - len(head) - len(tail) - len(open_tag) - len(close_tag) - 1
+        if room > 20:
+            # Truncate the raw text first, then escape — escaping after the cut
+            # avoids splitting a multi-char entity (e.g. "&amp;"). Shrink until
+            # the escaped result fits the remaining room.
+            snippet = content[:room]
+            esc = html.escape(snippet)
+            while esc and len(esc) > room:
+                snippet = snippet[: max(1, int(len(snippet) * room / len(esc)) - 1)]
+                esc = html.escape(snippet)
+            if esc:
+                block = f"{open_tag}{esc}{close_tag}\n"
+
+    return f"{head}{block}{tail}".strip()
 
 
 # ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
 
-async def _process_url(update: Update, context, url: str) -> None:
+async def _process_url(update: Update, context, url: str, delete_original: bool = True) -> None:
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
@@ -454,7 +489,11 @@ async def _process_url(update: Update, context, url: str) -> None:
     is_xhs    = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
     is_bili   = any(d in url.lower() for d in ("bilibili.com", "b23.tv"))
 
+    bot_username = context.bot.username or ""
+
     async def _delete_original() -> None:
+        if not delete_original:
+            return
         try:
             await msg.delete()
         except TelegramError:
@@ -475,14 +514,14 @@ async def _process_url(update: Update, context, url: str) -> None:
                     _bili_direct_parse(url, cookie, proxy, tmp_dir),
                     timeout=300,
                 )
-                caption = _make_caption(bili_title, "", url)
+                caption = _make_caption(bili_title, "", url, bot_username)
                 await status.delete()
                 status = None
                 with open(video_path, "rb") as f:
                     await context.bot.send_video(
                         chat.id,
                         video=f,
-                        caption=caption[:1024],
+                        caption=caption,
                         parse_mode=ParseMode.HTML,
                         supports_streaming=True,
                         reply_to_message_id=msg.message_id,
@@ -564,11 +603,12 @@ async def _process_url(update: Update, context, url: str) -> None:
                     )
                     preview = _first_paragraph(md)
                     preview_line = f"\n{html.escape(preview)}" if preview else ""
+                    via = f" | Share Via @{bot_username}" if bot_username else ""
                     await status.delete()
                     status = None
                     await context.bot.send_message(
                         chat.id,
-                        text=f"<b>{html.escape(art_title)}</b>{preview_line}\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
+                        text=f"<b>{html.escape(art_title)}</b>{preview_line}\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>{via}",
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
@@ -616,7 +656,7 @@ async def _process_url(update: Update, context, url: str) -> None:
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
-        caption = _make_caption(title, content, url)
+        caption = _make_caption(title, content, url, bot_username)
 
         async def _send_info_card(extra: str = "") -> None:
             thumbnail = _get_thumbnail(result)
@@ -625,7 +665,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                     await context.bot.send_photo(
                         chat.id,
                         photo=thumbnail,
-                        caption=(caption + extra)[:1024],
+                        caption=_make_caption(title, content, url, bot_username, extra=extra),
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
@@ -634,7 +674,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                     pass
             await context.bot.send_message(
                 chat.id,
-                text=(caption + extra)[:4096],
+                text=_make_caption(title, content, url, bot_username, limit=4096, extra=extra),
                 parse_mode=ParseMode.HTML,
                 reply_to_message_id=msg.message_id,
                 disable_web_page_preview=False,
@@ -667,7 +707,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             try:
                 media_group = []
                 for i, (fp, fh) in enumerate(zip(group_items[:10], fhs)):
-                    c = caption[:1024] if i == 0 else ""
+                    c = caption if i == 0 else ""
                     if fp.suffix.lower() in _img_exts:
                         media_group.append(InputMediaPhoto(
                             media=fh, caption=c, parse_mode=ParseMode.HTML,
@@ -689,12 +729,12 @@ async def _process_url(update: Update, context, url: str) -> None:
             with open(fp, "rb") as f:
                 if fp.suffix.lower() in _img_exts:
                     await context.bot.send_photo(
-                        chat.id, photo=f, caption=caption[:1024],
+                        chat.id, photo=f, caption=caption,
                         parse_mode=ParseMode.HTML, reply_to_message_id=msg.message_id,
                     )
                 else:
                     await context.bot.send_video(
-                        chat.id, video=f, caption=caption[:1024],
+                        chat.id, video=f, caption=caption,
                         parse_mode=ParseMode.HTML, supports_streaming=True,
                         reply_to_message_id=msg.message_id,
                     )
@@ -703,7 +743,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         first_single = files_sent == 0
         for fp in singles[:10 - files_sent]:
             ext = fp.suffix.lower()
-            c = caption[:1024] if first_single else ""
+            c = caption if first_single else ""
             first_single = False
             with open(fp, "rb") as f:
                 if ext in _audio_exts:
@@ -765,12 +805,14 @@ async def on_message_url(update: Update, context) -> None:
     if not msg or not chat or not msg.text:
         return
 
+    delete_original = True
     if chat.type in ("group", "supergroup"):
         settings = await get_group_settings(chat.id)
         if not settings.is_active:
             return
         if not settings.dlmode_enabled:
             return
+        delete_original = settings.media_del_original
 
     match = _URL_RE.search(msg.text)
     if not match:
@@ -780,14 +822,49 @@ async def on_message_url(update: Update, context) -> None:
     if not _is_known_url(url):
         return
 
-    await _process_url(update, context, url)
+    # Module disabled in 组件中心 → ignore the link silently.
+    if not await is_module_enabled("media"):
+        return
+
+    await _process_url(update, context, url, delete_original=delete_original)
 
 
 # ---------------------------------------------------------------------------
 # Module setup
 # ---------------------------------------------------------------------------
 
+def _cookie_field(key: str, name: str, required: bool) -> ConfigField:
+    tag = "需要登录 Cookie" if required else "公开内容无需 Cookie，私密内容才需要"
+    return ConfigField(
+        key=key,
+        label=f"{name} Cookie",
+        kind="cookie",
+        help=f"{tag}。粘贴浏览器导出的 Cookie 字符串，保存时自动规范化。",
+    )
+
+
+_COMPONENT = Component(
+    id="media",
+    name="媒体解析",
+    icon="bi-play-btn",
+    description="自动检测消息中的视频/图文链接并下载转发。各平台登录 Cookie 直接在此配置；"
+                "更丰富的按平台测试可前往「媒体解析」页面。",
+    config_keys=[
+        _cookie_field("cookie_bilibili",    "哔哩哔哩",   required=True),
+        _cookie_field("cookie_youtube",     "YouTube",    required=False),
+        _cookie_field("cookie_instagram",   "Instagram",  required=True),
+        _cookie_field("cookie_twitter",     "Twitter / X", required=True),
+        _cookie_field("cookie_tiktok",      "TikTok",     required=False),
+        _cookie_field("cookie_douyin",      "抖音",       required=False),
+        _cookie_field("cookie_xiaohongshu", "小红书",     required=False),
+        _cookie_field("cookie_kuaishou",    "快手",       required=False),
+    ],
+    order=20,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,

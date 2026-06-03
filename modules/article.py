@@ -31,7 +31,9 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler
 
+from bot import render
 from bot.ai import deepseek_call
+from bot.components import Component, ConfigField, TemplateSpec, register_component, require_module
 from bot.database import (
     add_web_feed,
     get_all_active_web_feeds,
@@ -181,14 +183,6 @@ async def cmd_parse(update: Update, context) -> None:
             await status.edit_text("❌ 无法提取正文，该页面可能需要登录或不含文章内容。")
             return
 
-        token = await _ensure_telegraph_token()
-        if not token:
-            await status.edit_text("❌ Telegraph 服务不可用，请检查网络连接。")
-            return
-
-        nodes  = _article_to_nodes(article)
-        tg_url = await _post_to_telegraph(article["title"] or "Article", nodes, token)
-
         # Optionally get a one-line AI summary (best-effort, no failure on error)
         summary_line = ""
         if article["text"]:
@@ -202,11 +196,18 @@ async def cmd_parse(update: Update, context) -> None:
                 summary_line = f"\n<i>{html.escape(summary[:200])}</i>"
 
         title_line = f"<b>{html.escape(article['title'][:200])}</b>\n" if article["title"] else ""
+        text = await render.render(
+            "article", "parse_result",
+            title_line=title_line,
+            summary_line=summary_line,
+            url=html.escape(url),
+            title=html.escape(article["title"][:200]) if article["title"] else "",
+        )
         await status.delete()
         await msg.reply_text(
-            f"{title_line}{summary_line}\n📖 <a href=\"{tg_url}\">阅读全文</a>",
+            text,
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True,
+            disable_web_page_preview=False,
         )
     except Exception as e:
         log.warning("cmd_parse error", url=url, error=str(e))
@@ -376,10 +377,12 @@ async def _process_new_article(
 
     label = html.escape(feed.label or urlparse(feed.url).netloc or "订阅")
     title_line = f"<b>{html.escape(display_title[:200])}</b>\n" if display_title else ""
-    text = (
-        f"📰 <b>{label}</b>\n"
-        f"{title_line}"
-        f"\n📖 <a href=\"{tg_url}\">阅读全文</a>"
+    text = await render.render(
+        "article", "feed_push",
+        label=label,
+        title_line=title_line,
+        tg_url=tg_url,
+        title=html.escape(display_title[:200]) if display_title else "",
     )
     try:
         await app.bot.send_message(
@@ -448,6 +451,78 @@ async def _poll_single_feed(app, feed, proxy: Optional[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Component center registration (web 组件中心)
+# ---------------------------------------------------------------------------
+
+async def _test_parse(sample_input: str) -> dict:
+    """Dry-run: fetch + extract an article without sending anything to Telegram."""
+    url = (sample_input or "").strip().rstrip(".,;:!?)'\"")
+    if not url.startswith(("http://", "https://")):
+        return {"ok": False, "error": "请输入有效 URL（以 http:// 或 https:// 开头）"}
+
+    article = await _fetch_article(url)
+    if not article:
+        return {"ok": False, "error": "无法提取正文，该页面可能需要登录或不含文章内容。"}
+
+    return {
+        "ok":           True,
+        "title":        article["title"],
+        "author":       article["author"],
+        "image":        article["image"],
+        "text_preview": article["text"][:600],
+    }
+
+
+_COMPONENT = Component(
+    id="article",
+    name="网页文章解析",
+    icon="bi-link-45deg",
+    description="/parse 解析网页正文（可选 AI 摘要），以及网页订阅定时推送新文章。AI 摘要/翻译使用全局 DeepSeek Key。",
+    config_keys=[
+        ConfigField(
+            key="web_feed_interval",
+            label="网页订阅轮询间隔（分钟）",
+            kind="int",
+            help="订阅源检查新文章的间隔，最小 5 分钟，默认 30。修改后下次启动生效。",
+            placeholder="30",
+            default="30",
+        ),
+    ],
+    templates=[
+        TemplateSpec(
+            key="parse_result",
+            name="/parse 解析结果",
+            default='{title_line}{summary_line}\n🔗 <a href="{url}">阅读原文</a>',
+            placeholders={
+                "title_line":   "<b>示例标题</b>\\n（无标题时为空）",
+                "summary_line": "\\n<i>这是一句话摘要</i>（无摘要时为空）",
+                "url":          "https://example.com/article",
+                "title":        "示例标题（纯文本，不含标签）",
+                "summary":      "这是一句话摘要（纯文本）",
+            },
+            help="支持 HTML。可用占位符：{title_line} {summary_line} {url} {title} {summary}",
+        ),
+        TemplateSpec(
+            key="feed_push",
+            name="订阅推送消息",
+            default='📰 <b>{label}</b>\n{title_line}\n📖 <a href="{tg_url}">阅读全文</a>',
+            placeholders={
+                "label":      "科技日报",
+                "title_line": "<b>示例文章标题</b>\\n（无标题时为空）",
+                "tg_url":     "https://telegra.ph/example",
+                "title":      "示例文章标题（纯文本）",
+            },
+            help="支持 HTML。可用占位符：{label} {title_line} {tg_url} {title}",
+        ),
+    ],
+    test=_test_parse,
+    test_label="文章 URL",
+    test_placeholder="https://example.com/some-article",
+    order=60,
+)
+
+
+# ---------------------------------------------------------------------------
 # Module setup
 # ---------------------------------------------------------------------------
 
@@ -471,12 +546,14 @@ def setup(application: Application) -> None:
 
     application.job_queue.run_once(lambda ctx: _start_poll_job(ctx.application), when=5)
 
+    register_component(_COMPONENT)
+
     registry.register_command("parse",       cmd_parse,       "解析网页文章到 Telegraph")
     registry.register_command("subscribe",   cmd_subscribe,   "订阅网页定时推送新文章",   admin_only=True)
     registry.register_command("unsubscribe", cmd_unsubscribe, "取消网页订阅",             admin_only=True)
     registry.register_command("webfeeds",    cmd_webfeeds,    "查看当前网页订阅列表",     admin_only=True)
 
-    application.add_handler(CommandHandler("parse",       cmd_parse))
-    application.add_handler(CommandHandler("subscribe",   cmd_subscribe))
-    application.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))
-    application.add_handler(CommandHandler("webfeeds",    cmd_webfeeds))
+    application.add_handler(CommandHandler("parse",       require_module("article")(cmd_parse)))
+    application.add_handler(CommandHandler("subscribe",   require_module("article")(cmd_subscribe)))
+    application.add_handler(CommandHandler("unsubscribe", require_module("article")(cmd_unsubscribe)))
+    application.add_handler(CommandHandler("webfeeds",    require_module("article")(cmd_webfeeds)))

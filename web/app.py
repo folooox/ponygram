@@ -33,6 +33,13 @@ from fastapi import Cookie, FastAPI, File, Form, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from bot import render
+from bot.components import all_components, get_component, is_module_enabled
+from bot.database import (
+    delete_template,
+    get_all_templates,
+    set_template,
+)
 from bot.database import (
     Blacklist,
     GroupSettings,
@@ -827,6 +834,31 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             else:
                 return JSONResponse({"status": "error", "detail": f"HTTP {status}"})
 
+        elif service == "deepseek":
+            key = configs.get("deepseek_api_key")
+            if not key:
+                return JSONResponse({"status": "missing", "detail": "API key not configured"})
+            try:
+                async with aiohttp.ClientSession() as s:
+                    async with s.post(
+                        "https://api.deepseek.com/chat/completions",
+                        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                        json={
+                            "model": "deepseek-chat",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "max_tokens": 1,
+                        },
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as r:
+                        if r.status == 200:
+                            return JSONResponse({"status": "ok", "detail": "DeepSeek API key is valid"})
+                        elif r.status in (401, 403):
+                            return JSONResponse({"status": "error", "detail": "Invalid API key"})
+                        else:
+                            return JSONResponse({"status": "error", "detail": f"HTTP {r.status}"})
+            except Exception as e:
+                return JSONResponse({"status": "error", "detail": str(e)[:120]})
+
         elif service == "ytdlp":
             try:
                 import yt_dlp
@@ -933,7 +965,8 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
 
         bool_fields = [
             "welcome_enabled", "goodbye_enabled", "verification_enabled",
-            "antispam_enabled", "antiad_enabled", "dlmode_enabled", "aichat_enabled",
+            "antispam_enabled", "antiad_enabled", "dlmode_enabled",
+            "media_del_original", "aichat_enabled",
         ]
         int_fields: dict[str, tuple[int, int]] = {
             "verification_timeout": (10, 600),
@@ -1072,21 +1105,12 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
     # Settings                                                             #
     # ------------------------------------------------------------------ #
 
-    @app.get("/settings", response_class=HTMLResponse)
-    async def settings_page(
-        request: Request,
-        saved: str = "",
-        session: Optional[str] = Cookie(None),
-    ):
+    @app.get("/settings")
+    async def settings_page(session: Optional[str] = Cookie(None)):
+        # Settings are now managed per-module in the 组件中心; redirect there.
         if not _authed(session):
             return _redirect_login()
-
-        configs = await get_all_bot_configs()
-        return templates.TemplateResponse(request, "settings.html", {
-            "active": "settings",
-            "configs": configs,
-            "saved": bool(saved),
-        })
+        return RedirectResponse(url="/components", status_code=307)
 
     @app.post("/settings")
     async def settings_update(
@@ -1097,9 +1121,17 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             return _redirect_login()
 
         form = await request.form()
-        api_keys = ["claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key",
-                    "deepseek_api_key"]
-        for key in api_keys:
+        # Save any plain/secret/int key declared by a registered component, plus
+        # the well-known keys (in case a module didn't register a component).
+        keys: set[str] = {
+            "claude_api_key", "tmdb_api_key", "lastfm_api_key", "rawg_api_key",
+            "deepseek_api_key",
+        }
+        for comp in all_components():
+            for f in comp.config_fields:
+                if f.kind in ("secret", "text", "int"):
+                    keys.add(f.key)
+        for key in keys:
             val = form.get(key, "").strip()
             if val:
                 await set_bot_config(key, val)
@@ -1461,13 +1493,204 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         stats  = await get_ai_usage_stats()
         recent = await get_ai_usage_log(100)
         return templates.TemplateResponse(
+            request,
             "ai_stats.html",
             {
-                "request": request,
                 "active":  "ai_stats",
                 "stats":   stats,
                 "recent":  recent,
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # Component center (组件中心)                                          #
+    # ------------------------------------------------------------------ #
+    @app.get("/components", response_class=HTMLResponse)
+    async def components_page(
+        request: Request,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        comps = all_components()
+        enabled_map = {c.id: await is_module_enabled(c.id) for c in comps}
+        return templates.TemplateResponse(request, "components.html", {
+            "active": "components",
+            "components": comps,
+            "enabled_map": enabled_map,
+        })
+
+    @app.get("/components/{component_id}", response_class=HTMLResponse)
+    async def component_detail(
+        request: Request,
+        component_id: str,
+        saved: str = "",
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        comp = get_component(component_id)
+        if not comp:
+            return RedirectResponse(url="/components", status_code=303)
+
+        custom = await get_all_templates(component_id)
+        configs = await get_all_bot_configs()
+        templates_view = [
+            {
+                "key":          t.key,
+                "name":         t.name,
+                "default":      t.default,
+                "current":      custom.get(t.key, t.default),
+                "placeholders": t.placeholders,
+                "help":         t.help,
+                "is_custom":    t.key in custom,
+            }
+            for t in comp.templates
+        ]
+        config_view = [
+            {
+                "key":          f.key,
+                "label":        f.label,
+                "kind":         f.kind,
+                "help":         f.help,
+                "placeholder":  f.placeholder,
+                "default":      f.default,
+                "test_service": f.test_service,
+                "link":         f.link,
+                "link_label":   f.link_label,
+                "set":          bool(configs.get(f.key)),
+                # Only echo plain values back into the form; never secrets/cookies.
+                "value":        configs.get(f.key, "") if f.kind in ("text", "int") else "",
+                "checked":      str(configs.get(f.key, "")).lower() in ("1", "true", "on", "yes"),
+            }
+            for f in comp.config_fields
+        ]
+        return templates.TemplateResponse(request, "component.html", {
+            "active":         "components",
+            "comp":           comp,
+            "templates_view": templates_view,
+            "config_view":    config_view,
+            "has_test":       comp.test is not None,
+            "enabled":        await is_module_enabled(component_id),
+            "saved":          bool(saved),
+        })
+
+    @app.post("/components/{component_id}/save")
+    async def component_save(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        if not get_component(component_id):
+            return RedirectResponse(url="/components", status_code=303)
+        form = await request.form()
+        key = (form.get("key") or "").strip()
+        template = form.get("template") or ""
+        if key:
+            await set_template(component_id, key, template)
+        return RedirectResponse(url=f"/components/{component_id}?saved=1", status_code=303)
+
+    @app.post("/components/{component_id}/config")
+    async def component_config_save(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        comp = get_component(component_id)
+        if not comp:
+            return RedirectResponse(url="/components", status_code=303)
+        form = await request.form()
+        for f in comp.config_fields:
+            if f.kind == "link":
+                continue
+            if f.kind == "bool":
+                await set_bot_config(f.key, "1" if form.get(f.key) else "0")
+                continue
+            if f.key not in form:
+                continue
+            val = (form.get(f.key) or "").strip()
+            if not val:
+                continue  # 留空 = 保持原值不变
+            if f.kind == "cookie":
+                normalized, _ = normalize_cookie(val)
+                val = normalized or val
+            elif f.kind == "int":
+                if not val.lstrip("-").isdigit():
+                    continue
+            await set_bot_config(f.key, val)
+        return RedirectResponse(url=f"/components/{component_id}?saved=1", status_code=303)
+
+    @app.post("/components/{component_id}/toggle")
+    async def component_toggle(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        comp = get_component(component_id)
+        if not comp or not comp.toggleable:
+            return RedirectResponse(url=f"/components/{component_id}", status_code=303)
+        # Switch posts "enabled=on" when turning on; absent when turning off.
+        form = await request.form()
+        await set_bot_config(f"module_enabled_{component_id}", "1" if form.get("enabled") else "0")
+        return RedirectResponse(url=f"/components/{component_id}?saved=1", status_code=303)
+
+    @app.post("/components/{component_id}/reset")
+    async def component_reset(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        form = await request.form()
+        key = (form.get("key") or "").strip()
+        if key:
+            await delete_template(component_id, key)
+        return RedirectResponse(url=f"/components/{component_id}?saved=1", status_code=303)
+
+    @app.post("/components/{component_id}/preview")
+    async def component_preview(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        comp = get_component(component_id)
+        if not comp:
+            return JSONResponse({"ok": False, "error": "unknown component"}, status_code=404)
+        body = await request.json()
+        key = (body.get("key") or "").strip()
+        template = body.get("template") or ""
+        spec = next((t for t in comp.templates if t.key == key), None)
+        sample = {
+            k: v.replace("\\n", "\n")
+            for k, v in (spec.placeholders.items() if spec else [])
+        }
+        return JSONResponse({"ok": True, "rendered": render.render_str(template, **sample)})
+
+    @app.post("/components/{component_id}/test")
+    async def component_test(
+        request: Request,
+        component_id: str,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        comp = get_component(component_id)
+        if not comp or comp.test is None:
+            return JSONResponse({"ok": False, "error": "no test available"}, status_code=404)
+        body = await request.json()
+        try:
+            result = await comp.test((body.get("input") or "").strip())
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)[:300]})
+        return JSONResponse(result)
 
     return app

@@ -3,8 +3,12 @@
 
 # Environment variables
 .env
+.env.bak
 .env.local
 .env.*.local
+
+# WARP daemon runtime data
+warp_data/
 
 # Python
 __pycache__/
