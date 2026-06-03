@@ -10,6 +10,8 @@ silently does nothing for unsupported platforms or failures.
 Only active groups (is_active=True) get URL processing.
 Private chats always get URL processing.
 Per-group dlmode_enabled toggle (default True) controls whether parsing runs.
+Per-group media_del_original toggle (default True) controls whether the user's
+original link message is deleted after the parsed media is sent.
 """
 
 from __future__ import annotations
@@ -29,7 +31,8 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
 
-from bot.database import get_group_settings
+from bot.components import Component, ConfigField, is_module_enabled, register_component
+from bot.database import get_group_settings, log_media_error
 from bot.logger import get_logger
 from bot.telegraph import (
     _ensure_telegraph_token,
@@ -121,6 +124,77 @@ def _get_proxy() -> Optional[str]:
         or os.environ.get("ALL_PROXY")
         or None
     )
+
+
+def _url_host(url: str) -> str:
+    """Best-effort host label for the error log (e.g. 'www.youtube.com')."""
+    m = re.match(r"https?://([^/]+)", url, re.IGNORECASE)
+    return (m.group(1) if m else url)[:64]
+
+
+async def _fail_silently(
+    status,
+    url: str,
+    stage: str,
+    err: Exception | str,
+    chat_id: Optional[int] = None,
+) -> None:
+    """Record a media failure to the web error log and quietly remove the status
+    message — failures are never surfaced in chat (per product decision)."""
+    err_type = type(err).__name__ if isinstance(err, Exception) else ""
+    err_msg = str(err)
+    try:
+        await log_media_error(
+            url=url, platform=_url_host(url), stage=stage,
+            error_type=err_type, error_msg=err_msg, chat_id=chat_id,
+        )
+    except Exception as e:
+        log.warning("Failed to record media error", error=str(e))
+    if status is not None:
+        try:
+            await status.delete()
+        except TelegramError:
+            pass
+
+
+# parsehub hardcodes the yt-dlp format as "mp4+bestvideo[height<=1080]+bestaudio"
+# (parsehub.parsers.base.ytdlp.YtParser.params) with no "/" fallback, so any video
+# lacking a matching stream fails outright with
+#   "Requested format is not available"
+# We patch the format to a graceful fallback chain that always ends in `b` (best
+# single format), so selection can never come up empty.
+#
+# Policy: grab the highest available quality with no height / size / duration cap —
+# whatever YouTube offers, we download. We must NOT bias toward mp4/avc1: on YouTube
+# the H.264 (avc1, mp4) ladder tops out at 1080p, while 1440p/4K are only published
+# as VP9 (webm) or AV1. Filtering by ext=mp4 would therefore silently pin everything
+# to 1080p. `bv*+ba` lets yt-dlp's default sort pick the highest resolution of any
+# codec; `/b` is the never-empty fallback. (The 720p cap only applies to the separate
+# Bilibili-without-login path, by design.)
+_YTDLP_FORMAT = "bv*+ba/b"
+_YTDLP_FORMAT_PATCHED = False
+
+
+def _patch_parsehub_ytdlp_format() -> None:
+    """Override parsehub's hardcoded yt-dlp format with a fallback chain. Idempotent."""
+    global _YTDLP_FORMAT_PATCHED
+    if _YTDLP_FORMAT_PATCHED:
+        return
+    try:
+        from parsehub.parsers.base.ytdlp import YtParser
+
+        _orig_params_fget = YtParser.params.fget
+
+        def _params_with_fallback(self):
+            params = _orig_params_fget(self)
+            params["format"] = _YTDLP_FORMAT
+            return params
+
+        YtParser.params = property(_params_with_fallback)
+        _YTDLP_FORMAT_PATCHED = True
+        log.info("Patched parsehub yt-dlp format", format=_YTDLP_FORMAT)
+    except Exception as e:
+        log.warning("Could not patch parsehub yt-dlp format", error=str(e))
 
 
 async def _get_cookie(url: str) -> Optional[str]:
@@ -421,28 +495,60 @@ def _get_files(dr, skip_video_path: bool = False) -> list[Path]:
     return [p for p in paths if p.exists()]
 
 
-def _make_caption(title: str, content: str, url: str) -> str:
+def _make_caption(
+    title: str,
+    content: str,
+    url: str,
+    bot_username: str = "",
+    *,
+    limit: int = 1024,
+    extra: str = "",
+) -> str:
+    """Build an HTML caption that always fits within ``limit`` characters.
+
+    Title and content are HTML-escaped, and the variable-length content block is
+    trimmed so the closing ``</blockquote>`` tag, the ``Source`` link and the
+    ``Share Via @bot`` footer are never sliced off (which corrupts the HTML and
+    makes Telegram reject the message with "can't find end tag …").
+    """
     link_icon = (
         f'<tg-emoji emoji-id="{_LINK_EMOJI_ID}">🔗</tg-emoji>'
         if _LINK_EMOJI_ID else "🔗"
     )
-    lines: list[str] = []
-    if title:
-        lines.append(f"<b>{title[:200]}</b>")
+    via = f" | Share Via @{bot_username}" if bot_username else ""
+    footer = f'\n{link_icon} <a href="{url}">Source</a>{via}'
+    tail = footer + (extra or "")
+
+    title = (title or "").strip()
+    head = f"<b>{html.escape(title[:200])}</b>\n" if title else ""
+
+    block = ""
+    content = (content or "").strip()
     if content:
-        if len(content) > 300:
-            lines.append(f"<blockquote expandable>{content[:2000]}</blockquote>")
-        else:
-            lines.append(content)
-    lines.append(f'\n{link_icon} <a href="{url}">Source</a>')
-    return "\n".join(lines)
+        expandable = len(content) > 300
+        open_tag = "<blockquote expandable>" if expandable else ""
+        close_tag = "</blockquote>" if expandable else ""
+        room = limit - len(head) - len(tail) - len(open_tag) - len(close_tag) - 1
+        if room > 20:
+            # Truncate the raw text first, then escape — escaping after the cut
+            # avoids splitting a multi-char entity (e.g. "&amp;"). Shrink until
+            # the escaped result fits the remaining room.
+            snippet = content[:room]
+            esc = html.escape(snippet)
+            while esc and len(esc) > room:
+                snippet = snippet[: max(1, int(len(snippet) * room / len(esc)) - 1)]
+                esc = html.escape(snippet)
+            if esc:
+                block = f"{open_tag}{esc}{close_tag}\n"
+
+    return f"{head}{block}{tail}".strip()
 
 
 # ---------------------------------------------------------------------------
 # Core pipeline
 # ---------------------------------------------------------------------------
 
-async def _process_url(update: Update, context, url: str) -> None:
+async def _process_url(update: Update, context, url: str, delete_original: bool = True) -> None:
     msg = update.effective_message
     chat = update.effective_chat
     assert msg and chat
@@ -454,7 +560,11 @@ async def _process_url(update: Update, context, url: str) -> None:
     is_xhs    = any(d in url.lower() for d in ("xiaohongshu.com", "xhslink.com"))
     is_bili   = any(d in url.lower() for d in ("bilibili.com", "b23.tv"))
 
+    bot_username = context.bot.username or ""
+
     async def _delete_original() -> None:
+        if not delete_original:
+            return
         try:
             await msg.delete()
         except TelegramError:
@@ -475,14 +585,14 @@ async def _process_url(update: Update, context, url: str) -> None:
                     _bili_direct_parse(url, cookie, proxy, tmp_dir),
                     timeout=300,
                 )
-                caption = _make_caption(bili_title, "", url)
+                caption = _make_caption(bili_title, "", url, bot_username)
                 await status.delete()
                 status = None
                 with open(video_path, "rb") as f:
                     await context.bot.send_video(
                         chat.id,
                         video=f,
-                        caption=caption[:1024],
+                        caption=caption,
                         parse_mode=ParseMode.HTML,
                         supports_streaming=True,
                         reply_to_message_id=msg.message_id,
@@ -501,6 +611,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         try:
             from parsehub import ParseHub
             from parsehub.errors import UnknownPlatform
+            _patch_parsehub_ytdlp_format()
             ph = ParseHub()
         except Exception as e:
             log.warning("ParseHub unavailable", error=str(e))
@@ -523,28 +634,11 @@ async def _process_url(update: Update, context, url: str) -> None:
                 url=url, error=err, err_type=err_type,
                 traceback=traceback.format_exc(),
             )
-            if _is_auth_error(err):
-                if cookie:
-                    await _notify_cookie_expired(context, url, err)
-                    await status.edit_text(
-                        f"❌ 该平台 Cookie 似乎已失效\n\n"
-                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
-                        f"<i>使用 /testcookie 诊断或 /setcookie 重新配置</i>",
-                        parse_mode=ParseMode.HTML,
-                    )
-                else:
-                    await status.edit_text(
-                        f"❌ 该平台需要登录才能解析\n\n"
-                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
-                        f"<i>使用 /setcookie 配置 Cookie</i>",
-                        parse_mode=ParseMode.HTML,
-                    )
-            else:
-                await status.edit_text(
-                    f"❌ 解析失败（{html.escape(err_type)}）\n\n"
-                    f"<code>{html.escape(err[:300])}</code>",
-                    parse_mode=ParseMode.HTML,
-                )
+            # Cookie-expiry still pings the owner privately (not chat spam),
+            # then we fail silently like every other parse error.
+            if _is_auth_error(err) and cookie:
+                await _notify_cookie_expired(context, url, err)
+            await _fail_silently(status, url, "parse", e, chat.id)
             return
 
         # ------------------------------------------------------------------ #
@@ -564,11 +658,12 @@ async def _process_url(update: Update, context, url: str) -> None:
                     )
                     preview = _first_paragraph(md)
                     preview_line = f"\n{html.escape(preview)}" if preview else ""
+                    via = f" | Share Via @{bot_username}" if bot_username else ""
                     await status.delete()
                     status = None
                     await context.bot.send_message(
                         chat.id,
-                        text=f"<b>{html.escape(art_title)}</b>{preview_line}\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>",
+                        text=f"<b>{html.escape(art_title)}</b>{preview_line}\n\n{link_icon} <a href=\"{tg_url}\">阅读全文</a>{via}",
                         parse_mode=ParseMode.HTML,
                         reply_to_message_id=msg.message_id,
                     )
@@ -591,6 +686,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         await context.bot.send_chat_action(chat.id, chat_action)
 
         files: list[Path] = []
+        download_err: Optional[Exception] = None
         if is_xhs:
             # XHS CDN requires Referer + cookie; download media directly.
             files = await _xhs_download_media(result, cookie, proxy, tmp_dir)
@@ -603,6 +699,7 @@ async def _process_url(update: Update, context, url: str) -> None:
                     )
                     files = _get_files(dr, skip_video_path=False)
                 except (asyncio.TimeoutError, Exception) as e:
+                    download_err = e
                     log.warning("XHS parsehub fallback download also failed", url=url, error=str(e))
         else:
             try:
@@ -612,39 +709,21 @@ async def _process_url(update: Update, context, url: str) -> None:
                 )
                 files = _get_files(dr, skip_video_path=False)
             except (asyncio.TimeoutError, Exception) as e:
+                download_err = e
                 log.warning("ParseHub download failed", url=url, error=str(e))
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
-        caption = _make_caption(title, content, url)
-
-        async def _send_info_card(extra: str = "") -> None:
-            thumbnail = _get_thumbnail(result)
-            if thumbnail:
-                try:
-                    await context.bot.send_photo(
-                        chat.id,
-                        photo=thumbnail,
-                        caption=(caption + extra)[:1024],
-                        parse_mode=ParseMode.HTML,
-                        reply_to_message_id=msg.message_id,
-                    )
-                    return
-                except TelegramError:
-                    pass
-            await context.bot.send_message(
-                chat.id,
-                text=(caption + extra)[:4096],
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=msg.message_id,
-                disable_web_page_preview=False,
-            )
+        caption = _make_caption(title, content, url, bot_username)
 
         if not files:
-            if status:
-                await status.delete()
-                status = None
-            await _send_info_card("\n\n⚠️ <i>下载失败，请点击原链接查看</i>")
+            # Download produced nothing — fail silently and record it for the
+            # web error log instead of posting a fallback card to chat.
+            await _fail_silently(
+                status, url, "download",
+                download_err or "下载失败：未获得任何文件",
+                chat.id,
+            )
             return
 
         if status:
@@ -667,7 +746,7 @@ async def _process_url(update: Update, context, url: str) -> None:
             try:
                 media_group = []
                 for i, (fp, fh) in enumerate(zip(group_items[:10], fhs)):
-                    c = caption[:1024] if i == 0 else ""
+                    c = caption if i == 0 else ""
                     if fp.suffix.lower() in _img_exts:
                         media_group.append(InputMediaPhoto(
                             media=fh, caption=c, parse_mode=ParseMode.HTML,
@@ -689,12 +768,12 @@ async def _process_url(update: Update, context, url: str) -> None:
             with open(fp, "rb") as f:
                 if fp.suffix.lower() in _img_exts:
                     await context.bot.send_photo(
-                        chat.id, photo=f, caption=caption[:1024],
+                        chat.id, photo=f, caption=caption,
                         parse_mode=ParseMode.HTML, reply_to_message_id=msg.message_id,
                     )
                 else:
                     await context.bot.send_video(
-                        chat.id, video=f, caption=caption[:1024],
+                        chat.id, video=f, caption=caption,
                         parse_mode=ParseMode.HTML, supports_streaming=True,
                         reply_to_message_id=msg.message_id,
                     )
@@ -703,7 +782,7 @@ async def _process_url(update: Update, context, url: str) -> None:
         first_single = files_sent == 0
         for fp in singles[:10 - files_sent]:
             ext = fp.suffix.lower()
-            c = caption[:1024] if first_single else ""
+            c = caption if first_single else ""
             first_single = False
             with open(fp, "rb") as f:
                 if ext in _audio_exts:
@@ -728,18 +807,10 @@ async def _process_url(update: Update, context, url: str) -> None:
 
     except TelegramError as e:
         log.warning("Media send failed", error=str(e))
-        if status:
-            try:
-                await status.edit_text(f"❌ {e}")
-            except TelegramError:
-                pass
+        await _fail_silently(status, url, "send", e, chat.id)
     except Exception as e:
         log.warning("Media pipeline error", error=str(e))
-        if status:
-            try:
-                await status.delete()
-            except TelegramError:
-                pass
+        await _fail_silently(status, url, "pipeline", e, chat.id)
     finally:
         for f in sorted(Path(tmp_dir).rglob("*"), reverse=True):
             try:
@@ -765,12 +836,14 @@ async def on_message_url(update: Update, context) -> None:
     if not msg or not chat or not msg.text:
         return
 
+    delete_original = True
     if chat.type in ("group", "supergroup"):
         settings = await get_group_settings(chat.id)
         if not settings.is_active:
             return
         if not settings.dlmode_enabled:
             return
+        delete_original = settings.media_del_original
 
     match = _URL_RE.search(msg.text)
     if not match:
@@ -780,14 +853,49 @@ async def on_message_url(update: Update, context) -> None:
     if not _is_known_url(url):
         return
 
-    await _process_url(update, context, url)
+    # Module disabled in 组件中心 → ignore the link silently.
+    if not await is_module_enabled("media"):
+        return
+
+    await _process_url(update, context, url, delete_original=delete_original)
 
 
 # ---------------------------------------------------------------------------
 # Module setup
 # ---------------------------------------------------------------------------
 
+def _cookie_field(key: str, name: str, required: bool) -> ConfigField:
+    tag = "需要登录 Cookie" if required else "公开内容无需 Cookie，私密内容才需要"
+    return ConfigField(
+        key=key,
+        label=f"{name} Cookie",
+        kind="cookie",
+        help=f"{tag}。粘贴浏览器导出的 Cookie 字符串，保存时自动规范化。",
+    )
+
+
+_COMPONENT = Component(
+    id="media",
+    name="媒体解析",
+    icon="bi-play-btn",
+    description="自动检测消息中的视频/图文链接并下载转发。各平台登录 Cookie 直接在此配置；"
+                "更丰富的按平台测试可前往「媒体解析」页面。",
+    config_keys=[
+        _cookie_field("cookie_bilibili",    "哔哩哔哩",   required=True),
+        _cookie_field("cookie_youtube",     "YouTube",    required=False),
+        _cookie_field("cookie_instagram",   "Instagram",  required=True),
+        _cookie_field("cookie_twitter",     "Twitter / X", required=True),
+        _cookie_field("cookie_tiktok",      "TikTok",     required=False),
+        _cookie_field("cookie_douyin",      "抖音",       required=False),
+        _cookie_field("cookie_xiaohongshu", "小红书",     required=False),
+        _cookie_field("cookie_kuaishou",    "快手",       required=False),
+    ],
+    order=20,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND & ~filters.UpdateType.EDITED_MESSAGE,

@@ -23,6 +23,7 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import music_cache
+from bot.components import Component, ConfigField, register_component, require_module
 from bot.database import get_bot_config
 from bot.logger import get_logger
 from bot.router import registry
@@ -359,10 +360,32 @@ async def cmd_artist(update: Update, context) -> None:
     await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+_COMPONENT = Component(
+    id="music",
+    name="音乐搜索",
+    icon="bi-music-note-beamed",
+    description="/music /artist 及 inline 音乐搜索，数据来自 Last.fm。",
+    config_keys=[
+        ConfigField(
+            key="lastfm_api_key",
+            label="Last.fm API Key",
+            kind="secret",
+            help='前往 last.fm/api/account/create 填写应用名称后复制 API key（不是 Shared Secret）。格式：32 位十六进制。',
+            placeholder="32位十六进制",
+            test_service="lastfm",
+            link="https://www.last.fm/api/account/create",
+            link_label="last.fm/api",
+        ),
+    ],
+    order=40,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     registry.register_command("music", cmd_music, "搜索音乐 <歌手 - 歌名>")
     registry.register_command("artist", cmd_artist, "搜索歌手信息 <歌手名>")
     application.add_handler(CallbackQueryHandler(on_music_select, pattern=r"^music_sel:"))
-    application.add_handler(CommandHandler("music", cmd_music))
-    application.add_handler(CommandHandler("artist", cmd_artist))
+    application.add_handler(CommandHandler("music", require_module("music")(cmd_music)))
+    application.add_handler(CommandHandler("artist", require_module("music")(cmd_artist)))
     log.info("music module loaded")

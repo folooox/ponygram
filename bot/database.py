@@ -77,6 +77,7 @@ class GroupSettings(Base):
     antiad_enabled = Column(Boolean, default=False)
     warn_limit = Column(Integer, default=3)
     dlmode_enabled = Column(Boolean, default=True)     # auto media URL detection (on by default)
+    media_del_original = Column(Boolean, default=True) # delete original link msg after parsing (on by default)
     aichat_enabled = Column(Boolean, default=True)     # AI auto-reply (on by default)
     rules_text = Column(Text, nullable=True)           # group rules displayed by /rules command
 
@@ -220,6 +221,38 @@ class AiUsageLog(Base):
     called_at     = Column(DateTime, default=datetime.utcnow)
 
 
+class MediaErrorLog(Base):
+    """Log of media parse/download failures for the web error-log panel.
+
+    Errors are no longer surfaced in chat (failures fail silently); they are
+    recorded here so the owner can review problems from the Web Admin UI.
+    """
+    __tablename__ = "media_error_log"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    url        = Column(Text, nullable=False)
+    platform   = Column(String(64), nullable=True)   # best-effort host/platform label
+    stage      = Column(String(32), nullable=True)   # parse / download / send / pipeline
+    error_type = Column(String(128), nullable=True)  # exception class name
+    error_msg  = Column(Text, nullable=True)          # truncated error text
+    chat_id    = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class OutputTemplate(Base):
+    """Runtime-editable output text templates for the 组件中心 (component center).
+
+    Keyed by (component_id, key). When no row exists the owning module's
+    built-in default (registered via bot.components) is used instead.
+    """
+    __tablename__ = "output_templates"
+
+    component_id = Column(String(64), primary_key=True)
+    key          = Column(String(64), primary_key=True)
+    template     = Column(Text, nullable=True)
+    updated_at   = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
 # ---------------------------------------------------------------------------
 # Engine / session factory
 # ---------------------------------------------------------------------------
@@ -238,6 +271,7 @@ async def _migrate(conn) -> None:
         ("group_settings",    "welcome_text",  "TEXT"),
         ("group_settings",    "goodbye_text",  "TEXT"),
         ("group_settings",    "dlmode_enabled","BOOLEAN NOT NULL DEFAULT 1"),
+        ("group_settings",    "media_del_original","BOOLEAN NOT NULL DEFAULT 1"),
         ("group_settings",    "aichat_enabled","BOOLEAN NOT NULL DEFAULT 1"),
         ("group_settings",    "rules_text",    "TEXT"),
         ("psn_library_games", "extra_data",    "TEXT DEFAULT '{}'"),
@@ -557,6 +591,49 @@ async def get_all_bot_configs() -> dict[str, str]:
     async with get_session() as s:
         result = await s.execute(select(BotConfig))
         return {r.key: r.value for r in result.scalars().all() if r.value is not None}
+
+
+# ---------------------------------------------------------------------------
+# Output templates (组件中心 / component center)
+# ---------------------------------------------------------------------------
+
+async def get_template(component_id: str, key: str) -> Optional[str]:
+    """Return the saved custom template for (component_id, key), or None."""
+    async with get_session() as s:
+        row = await s.get(OutputTemplate, (component_id, key))
+        return row.template if row and row.template else None
+
+
+async def set_template(component_id: str, key: str, template: str) -> None:
+    """Upsert a custom output template."""
+    async with get_session() as s:
+        row = await s.get(OutputTemplate, (component_id, key))
+        if row:
+            row.template = template
+            row.updated_at = datetime.utcnow()
+        else:
+            s.add(OutputTemplate(component_id=component_id, key=key, template=template))
+        await s.commit()
+
+
+async def delete_template(component_id: str, key: str) -> bool:
+    """Remove a custom template (revert to built-in default). Returns True if removed."""
+    async with get_session() as s:
+        row = await s.get(OutputTemplate, (component_id, key))
+        if row:
+            await s.delete(row)
+            await s.commit()
+            return True
+        return False
+
+
+async def get_all_templates(component_id: str) -> dict[str, str]:
+    """Return all saved custom templates for a component as {key: template}."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(OutputTemplate).where(OutputTemplate.component_id == component_id)
+        )
+        return {row.key: row.template for row in result.scalars().all() if row.template}
 
 
 # ---------------------------------------------------------------------------
@@ -1106,3 +1183,47 @@ async def get_ai_usage_log(limit: int = 100) -> List["AiUsageLog"]:
             select(AiUsageLog).order_by(AiUsageLog.called_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# MediaErrorLog helpers
+# ---------------------------------------------------------------------------
+
+async def log_media_error(
+    url: str,
+    platform: str = "",
+    stage: str = "",
+    error_type: str = "",
+    error_msg: str = "",
+    chat_id: Optional[int] = None,
+) -> None:
+    """Record a media parse/download failure for the web error-log panel."""
+    async with get_session() as s:
+        s.add(MediaErrorLog(
+            url=url[:1000],
+            platform=(platform or "")[:64],
+            stage=(stage or "")[:32],
+            error_type=(error_type or "")[:128],
+            error_msg=(error_msg or "")[:2000],
+            chat_id=chat_id,
+        ))
+        await s.commit()
+
+
+async def get_media_errors(limit: int = 200) -> List["MediaErrorLog"]:
+    """Return the most recent media error log entries (newest first)."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(MediaErrorLog).order_by(MediaErrorLog.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+async def clear_media_errors() -> int:
+    """Delete all media error log entries. Returns the number removed."""
+    async with get_session() as s:
+        result = await s.execute(select(func.count(MediaErrorLog.id)))
+        count = result.scalar() or 0
+        await s.execute(delete(MediaErrorLog))
+        await s.commit()
+        return int(count)

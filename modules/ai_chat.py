@@ -24,6 +24,14 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
 
+from bot import render
+from bot.components import (
+    Component,
+    ConfigField,
+    TemplateSpec,
+    is_module_enabled,
+    register_component,
+)
 from bot.database import get_bot_config, get_group_settings
 from bot.logger import get_logger
 from bot.router import registry
@@ -82,10 +90,13 @@ async def _stream_claude(messages: list[dict], status_msg) -> str:
     last_edit = 0.0
     EDIT_INTERVAL = 1.5
 
+    # System prompt is editable in the web 组件中心 (falls back to default).
+    system_prompt = await render.render("ai_chat", "system_prompt")
+
     async with client.messages.stream(
         model="claude-opus-4-7",
         max_tokens=MAX_OUTPUT_TOKENS,
-        system=_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=messages,
         thinking={"type": "adaptive"},
     ) as stream:
@@ -194,6 +205,10 @@ async def on_natural_trigger(update: Update, context) -> None:
     if user_text is None:
         return
 
+    # Module disabled in 组件中心 → ignore the trigger silently.
+    if not await is_module_enabled("ai_chat"):
+        return
+
     if not user_text:
         await msg.reply_text("Yes? Ask me something!")
         return
@@ -205,7 +220,37 @@ async def on_natural_trigger(update: Update, context) -> None:
 # Module setup
 # ---------------------------------------------------------------------------
 
+_COMPONENT = Component(
+    id="ai_chat",
+    name="AI 对话",
+    icon="bi-robot",
+    description="@提及、pony 前缀或回复机器人触发的 Claude 流式对话。系统提示词可在下方编辑。",
+    config_keys=[
+        ConfigField(
+            key="claude_api_key",
+            label="Claude API Key",
+            kind="secret",
+            help='前往 console.anthropic.com → API Keys → Create Key（仅显示一次）。格式：<code>sk-ant-api03-</code> 开头。',
+            placeholder="sk-ant-api03-…",
+            test_service="claude",
+            link="https://console.anthropic.com",
+            link_label="console.anthropic.com",
+        ),
+    ],
+    templates=[
+        TemplateSpec(
+            key="system_prompt",
+            name="系统提示词 (System Prompt)",
+            default=_SYSTEM_PROMPT,
+            help="定义 AI 的人设与回复风格。无占位符，整段即为发给模型的 system 提示。",
+        ),
+    ],
+    order=10,
+)
+
+
 def setup(application: Application) -> None:
+    register_component(_COMPONENT)
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,

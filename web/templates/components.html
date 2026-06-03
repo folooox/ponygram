@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}组件中心 · Ponygram Admin{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+  <h1 class="h4 mb-0">组件中心</h1>
+</div>
+
+<p class="text-muted">为每个功能组件配置密钥、编辑输出文案模板，并进行调试测试。</p>
+
+{% if not components %}
+  <div class="text-muted">暂无已注册的组件。</div>
+{% else %}
+<div class="row g-3">
+  {% for c in components %}
+  <div class="col-md-6 col-lg-4">
+    <a href="/components/{{ c.id }}" class="text-decoration-none">
+      <div class="card h-100 {% if c.toggleable and not enabled_map.get(c.id) %}opacity-50{% endif %}">
+        <div class="card-body">
+          <div class="d-flex align-items-center mb-2">
+            <i class="bi {{ c.icon }} fs-4 me-2"></i>
+            <span class="h5 mb-0">{{ c.name }}</span>
+            {% if c.toggleable %}
+              {% if enabled_map.get(c.id) %}
+              <span class="badge text-bg-success ms-auto">已启用</span>
+              {% else %}
+              <span class="badge text-bg-secondary ms-auto">已停用</span>
+              {% endif %}
+            {% endif %}
+          </div>
+          <div class="small text-muted">{{ c.description }}</div>
+          <div class="mt-3 small">
+            {% if c.templates %}
+            <span class="badge text-bg-secondary">{{ c.templates|length }} 个模板</span>
+            {% endif %}
+            {% if c.config_count %}
+            <span class="badge text-bg-secondary">{{ c.config_count }} 项配置</span>
+            {% endif %}
+            {% if c.test %}
+            <span class="badge text-bg-info">可调试</span>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% endblock %}
