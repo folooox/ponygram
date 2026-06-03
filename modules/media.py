@@ -32,7 +32,7 @@ from telegram.error import TelegramError
 from telegram.ext import Application, MessageHandler, filters
 
 from bot.components import Component, ConfigField, is_module_enabled, register_component
-from bot.database import get_group_settings
+from bot.database import get_group_settings, log_media_error
 from bot.logger import get_logger
 from bot.telegraph import (
     _ensure_telegraph_token,
@@ -124,6 +124,77 @@ def _get_proxy() -> Optional[str]:
         or os.environ.get("ALL_PROXY")
         or None
     )
+
+
+def _url_host(url: str) -> str:
+    """Best-effort host label for the error log (e.g. 'www.youtube.com')."""
+    m = re.match(r"https?://([^/]+)", url, re.IGNORECASE)
+    return (m.group(1) if m else url)[:64]
+
+
+async def _fail_silently(
+    status,
+    url: str,
+    stage: str,
+    err: Exception | str,
+    chat_id: Optional[int] = None,
+) -> None:
+    """Record a media failure to the web error log and quietly remove the status
+    message — failures are never surfaced in chat (per product decision)."""
+    err_type = type(err).__name__ if isinstance(err, Exception) else ""
+    err_msg = str(err)
+    try:
+        await log_media_error(
+            url=url, platform=_url_host(url), stage=stage,
+            error_type=err_type, error_msg=err_msg, chat_id=chat_id,
+        )
+    except Exception as e:
+        log.warning("Failed to record media error", error=str(e))
+    if status is not None:
+        try:
+            await status.delete()
+        except TelegramError:
+            pass
+
+
+# parsehub hardcodes the yt-dlp format as "mp4+bestvideo[height<=1080]+bestaudio"
+# (parsehub.parsers.base.ytdlp.YtParser.params) with no "/" fallback, so any video
+# lacking a matching stream fails outright with
+#   "Requested format is not available"
+# We patch the format to a graceful fallback chain that always ends in `b` (best
+# single format), so selection can never come up empty.
+#
+# Policy: grab the highest available quality with no height / size / duration cap —
+# whatever YouTube offers, we download. We must NOT bias toward mp4/avc1: on YouTube
+# the H.264 (avc1, mp4) ladder tops out at 1080p, while 1440p/4K are only published
+# as VP9 (webm) or AV1. Filtering by ext=mp4 would therefore silently pin everything
+# to 1080p. `bv*+ba` lets yt-dlp's default sort pick the highest resolution of any
+# codec; `/b` is the never-empty fallback. (The 720p cap only applies to the separate
+# Bilibili-without-login path, by design.)
+_YTDLP_FORMAT = "bv*+ba/b"
+_YTDLP_FORMAT_PATCHED = False
+
+
+def _patch_parsehub_ytdlp_format() -> None:
+    """Override parsehub's hardcoded yt-dlp format with a fallback chain. Idempotent."""
+    global _YTDLP_FORMAT_PATCHED
+    if _YTDLP_FORMAT_PATCHED:
+        return
+    try:
+        from parsehub.parsers.base.ytdlp import YtParser
+
+        _orig_params_fget = YtParser.params.fget
+
+        def _params_with_fallback(self):
+            params = _orig_params_fget(self)
+            params["format"] = _YTDLP_FORMAT
+            return params
+
+        YtParser.params = property(_params_with_fallback)
+        _YTDLP_FORMAT_PATCHED = True
+        log.info("Patched parsehub yt-dlp format", format=_YTDLP_FORMAT)
+    except Exception as e:
+        log.warning("Could not patch parsehub yt-dlp format", error=str(e))
 
 
 async def _get_cookie(url: str) -> Optional[str]:
@@ -540,6 +611,7 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
         try:
             from parsehub import ParseHub
             from parsehub.errors import UnknownPlatform
+            _patch_parsehub_ytdlp_format()
             ph = ParseHub()
         except Exception as e:
             log.warning("ParseHub unavailable", error=str(e))
@@ -562,28 +634,11 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
                 url=url, error=err, err_type=err_type,
                 traceback=traceback.format_exc(),
             )
-            if _is_auth_error(err):
-                if cookie:
-                    await _notify_cookie_expired(context, url, err)
-                    await status.edit_text(
-                        f"❌ 该平台 Cookie 似乎已失效\n\n"
-                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
-                        f"<i>使用 /testcookie 诊断或 /setcookie 重新配置</i>",
-                        parse_mode=ParseMode.HTML,
-                    )
-                else:
-                    await status.edit_text(
-                        f"❌ 该平台需要登录才能解析\n\n"
-                        f"原始错误：<code>{html.escape(err[:200])}</code>\n\n"
-                        f"<i>使用 /setcookie 配置 Cookie</i>",
-                        parse_mode=ParseMode.HTML,
-                    )
-            else:
-                await status.edit_text(
-                    f"❌ 解析失败（{html.escape(err_type)}）\n\n"
-                    f"<code>{html.escape(err[:300])}</code>",
-                    parse_mode=ParseMode.HTML,
-                )
+            # Cookie-expiry still pings the owner privately (not chat spam),
+            # then we fail silently like every other parse error.
+            if _is_auth_error(err) and cookie:
+                await _notify_cookie_expired(context, url, err)
+            await _fail_silently(status, url, "parse", e, chat.id)
             return
 
         # ------------------------------------------------------------------ #
@@ -631,6 +686,7 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
         await context.bot.send_chat_action(chat.id, chat_action)
 
         files: list[Path] = []
+        download_err: Optional[Exception] = None
         if is_xhs:
             # XHS CDN requires Referer + cookie; download media directly.
             files = await _xhs_download_media(result, cookie, proxy, tmp_dir)
@@ -643,6 +699,7 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
                     )
                     files = _get_files(dr, skip_video_path=False)
                 except (asyncio.TimeoutError, Exception) as e:
+                    download_err = e
                     log.warning("XHS parsehub fallback download also failed", url=url, error=str(e))
         else:
             try:
@@ -652,39 +709,21 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
                 )
                 files = _get_files(dr, skip_video_path=False)
             except (asyncio.TimeoutError, Exception) as e:
+                download_err = e
                 log.warning("ParseHub download failed", url=url, error=str(e))
 
         title   = (getattr(result, "title",   "") or "").strip()
         content = (getattr(result, "content", "") or "").strip()
         caption = _make_caption(title, content, url, bot_username)
 
-        async def _send_info_card(extra: str = "") -> None:
-            thumbnail = _get_thumbnail(result)
-            if thumbnail:
-                try:
-                    await context.bot.send_photo(
-                        chat.id,
-                        photo=thumbnail,
-                        caption=_make_caption(title, content, url, bot_username, extra=extra),
-                        parse_mode=ParseMode.HTML,
-                        reply_to_message_id=msg.message_id,
-                    )
-                    return
-                except TelegramError:
-                    pass
-            await context.bot.send_message(
-                chat.id,
-                text=_make_caption(title, content, url, bot_username, limit=4096, extra=extra),
-                parse_mode=ParseMode.HTML,
-                reply_to_message_id=msg.message_id,
-                disable_web_page_preview=False,
-            )
-
         if not files:
-            if status:
-                await status.delete()
-                status = None
-            await _send_info_card("\n\n⚠️ <i>下载失败，请点击原链接查看</i>")
+            # Download produced nothing — fail silently and record it for the
+            # web error log instead of posting a fallback card to chat.
+            await _fail_silently(
+                status, url, "download",
+                download_err or "下载失败：未获得任何文件",
+                chat.id,
+            )
             return
 
         if status:
@@ -768,18 +807,10 @@ async def _process_url(update: Update, context, url: str, delete_original: bool 
 
     except TelegramError as e:
         log.warning("Media send failed", error=str(e))
-        if status:
-            try:
-                await status.edit_text(f"❌ {e}")
-            except TelegramError:
-                pass
+        await _fail_silently(status, url, "send", e, chat.id)
     except Exception as e:
         log.warning("Media pipeline error", error=str(e))
-        if status:
-            try:
-                await status.delete()
-            except TelegramError:
-                pass
+        await _fail_silently(status, url, "pipeline", e, chat.id)
     finally:
         for f in sorted(Path(tmp_dir).rglob("*"), reverse=True):
             try:

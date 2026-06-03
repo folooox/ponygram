@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}媒体错误日志 — Ponygram Admin{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-4">
+  <h4 class="fw-bold mb-0"><span data-zh="媒体错误日志" data-en="Media Error Log">媒体错误日志</span></h4>
+  <span class="badge bg-secondary ms-2">{{ errors|length }}</span>
+  {% if errors %}
+  <form method="post" action="/media-errors/clear" class="ms-auto"
+        onsubmit="return confirm('清空全部错误日志？');">
+    <button type="submit" class="btn btn-sm btn-outline-danger">
+      <i class="bi bi-trash me-1"></i><span data-zh="清空" data-en="Clear">清空</span>
+    </button>
+  </form>
+  {% endif %}
+</div>
+
+<div class="card" style="background:#1e2130;border-radius:.75rem">
+  <div class="card-body p-0">
+    <h6 class="fw-semibold text-secondary text-uppercase px-3 pt-3 pb-2" style="font-size:.75rem;letter-spacing:.05em">
+      <i class="bi bi-exclamation-triangle me-1"></i>
+      <span data-zh="解析 / 下载失败记录（最多 200 条）" data-en="Parse / download failures (up to 200)">解析 / 下载失败记录（最多 200 条）</span>
+    </h6>
+    {% if errors %}
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0" style="font-size:.8rem">
+        <thead>
+          <tr class="text-secondary" style="font-size:.72rem;letter-spacing:.04em">
+            <th class="ps-3" data-zh="时间" data-en="Time">时间</th>
+            <th data-zh="平台" data-en="Platform">平台</th>
+            <th data-zh="阶段" data-en="Stage">阶段</th>
+            <th data-zh="类型" data-en="Type">类型</th>
+            <th data-zh="链接 / 错误" data-en="URL / Error">链接 / 错误</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in errors %}
+          <tr>
+            <td class="ps-3 text-secondary text-nowrap">{{ row.created_at.strftime("%m-%d %H:%M:%S") if row.created_at else "—" }}</td>
+            <td><span class="badge bg-primary bg-opacity-25 text-primary-emphasis">{{ row.platform or "—" }}</span></td>
+            <td>
+              {% set stage_color = {'parse':'bg-warning text-dark','download':'bg-danger','send':'bg-info text-dark','pipeline':'bg-secondary'} %}
+              <span class="badge {{ stage_color.get(row.stage, 'bg-secondary') }}">{{ row.stage or "—" }}</span>
+            </td>
+            <td><code class="small">{{ row.error_type or "—" }}</code></td>
+            <td style="max-width:520px">
+              <a href="{{ row.url }}" target="_blank" rel="noopener" class="d-block text-truncate" style="max-width:520px">{{ row.url }}</a>
+              {% if row.error_msg %}
+              <div class="text-secondary small text-break mt-1" style="white-space:pre-wrap">{{ row.error_msg }}</div>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <div class="text-center py-5 text-secondary">
+      <i class="bi bi-check-circle fs-2 d-block mb-2"></i>
+      <span data-zh="暂无错误记录" data-en="No errors recorded">暂无错误记录</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

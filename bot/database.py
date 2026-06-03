@@ -221,6 +221,24 @@ class AiUsageLog(Base):
     called_at     = Column(DateTime, default=datetime.utcnow)
 
 
+class MediaErrorLog(Base):
+    """Log of media parse/download failures for the web error-log panel.
+
+    Errors are no longer surfaced in chat (failures fail silently); they are
+    recorded here so the owner can review problems from the Web Admin UI.
+    """
+    __tablename__ = "media_error_log"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    url        = Column(Text, nullable=False)
+    platform   = Column(String(64), nullable=True)   # best-effort host/platform label
+    stage      = Column(String(32), nullable=True)   # parse / download / send / pipeline
+    error_type = Column(String(128), nullable=True)  # exception class name
+    error_msg  = Column(Text, nullable=True)          # truncated error text
+    chat_id    = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 class OutputTemplate(Base):
     """Runtime-editable output text templates for the 组件中心 (component center).
 
@@ -1165,3 +1183,47 @@ async def get_ai_usage_log(limit: int = 100) -> List["AiUsageLog"]:
             select(AiUsageLog).order_by(AiUsageLog.called_at.desc()).limit(limit)
         )
         return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# MediaErrorLog helpers
+# ---------------------------------------------------------------------------
+
+async def log_media_error(
+    url: str,
+    platform: str = "",
+    stage: str = "",
+    error_type: str = "",
+    error_msg: str = "",
+    chat_id: Optional[int] = None,
+) -> None:
+    """Record a media parse/download failure for the web error-log panel."""
+    async with get_session() as s:
+        s.add(MediaErrorLog(
+            url=url[:1000],
+            platform=(platform or "")[:64],
+            stage=(stage or "")[:32],
+            error_type=(error_type or "")[:128],
+            error_msg=(error_msg or "")[:2000],
+            chat_id=chat_id,
+        ))
+        await s.commit()
+
+
+async def get_media_errors(limit: int = 200) -> List["MediaErrorLog"]:
+    """Return the most recent media error log entries (newest first)."""
+    async with get_session() as s:
+        result = await s.execute(
+            select(MediaErrorLog).order_by(MediaErrorLog.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+async def clear_media_errors() -> int:
+    """Delete all media error log entries. Returns the number removed."""
+    async with get_session() as s:
+        result = await s.execute(select(func.count(MediaErrorLog.id)))
+        count = result.scalar() or 0
+        await s.execute(delete(MediaErrorLog))
+        await s.commit()
+        return int(count)

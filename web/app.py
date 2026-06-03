@@ -58,6 +58,8 @@ from bot.database import (
     get_ai_usage_log,
     get_ai_usage_stats,
     get_all_bot_configs,
+    get_media_errors,
+    clear_media_errors,
     get_all_rss_feeds,
     get_bot_config,
     get_group_settings,
@@ -1501,6 +1503,33 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 "recent":  recent,
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # Media error log (媒体错误日志)                                       #
+    # ------------------------------------------------------------------ #
+    @app.get("/media-errors", response_class=HTMLResponse)
+    async def media_errors_page(
+        request: Request,
+        session: Optional[str] = Cookie(None),
+    ):
+        if not _authed(session):
+            return _redirect_login()
+        errors = await get_media_errors(200)
+        return templates.TemplateResponse(
+            request,
+            "media_errors.html",
+            {
+                "active": "media_errors",
+                "errors": errors,
+            },
+        )
+
+    @app.post("/media-errors/clear")
+    async def media_errors_clear(session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        await clear_media_errors()
+        return RedirectResponse("/media-errors", status_code=303)
 
     # ------------------------------------------------------------------ #
     # Component center (组件中心)                                          #
