@@ -24,15 +24,26 @@
 
         <!-- Recipient -->
         <label class="form-label small mb-1">
-          <span data-zh="收件人 (Telegram 用户 ID / @用户名)" data-en="Recipient (Telegram user ID / @username)">Recipient (Telegram user ID / @username)</span>
+          <span data-zh="收件人" data-en="Recipient">Recipient</span>
         </label>
+        <select class="form-select form-select-sm mb-1" id="recipient-select" onchange="onRecipientChange()">
+          <option value="{{ default_chat_id }}">👤 Owner — 私聊自己 ({{ default_chat_id }})</option>
+          {% if groups %}
+          <optgroup label="群组 / Groups">
+            {% for g in groups %}
+            <option value="{{ g.chat_id }}">👥 {{ g.title or ('Group ' ~ g.chat_id) }} ({{ g.chat_id }}){% if not g.active %} · inactive{% endif %}</option>
+            {% endfor %}
+          </optgroup>
+          {% endif %}
+          <option value="__custom__">✏️ 自定义 / Custom…</option>
+        </select>
         <input type="text" class="form-control form-control-sm mb-1" id="chat-id"
-               value="{{ default_chat_id }}" placeholder="123456789">
+               value="{{ default_chat_id }}" placeholder="123456789 / -1001234567890 / @username">
         <div class="small text-muted mb-2">
           <i class="bi bi-info-circle"></i>
-          <span data-zh="默认填入 OWNER_ID。机器人只能私发给已经 /start 过它的用户。"
-                data-en="Defaults to OWNER_ID. The bot can only DM users who have /start-ed it.">
-            Defaults to OWNER_ID. The bot can only DM users who have /start-ed it.
+          <span data-zh="选择自己（私聊）或某个群。发到群需机器人在该群内；私聊需对方已 /start 过机器人。"
+                data-en="Pick yourself (DM) or a group. Group sends require the bot to be a member; DMs require the user to have /start-ed the bot.">
+            Pick yourself (DM) or a group. Group sends require the bot to be a member; DMs require the user to have /start-ed the bot.
           </span>
         </div>
 
@@ -226,6 +237,18 @@
       e.target.classList.toggle('revealed');
     }
   });
+
+  // ── Recipient picker ─────────────────────────────────────────────
+  function onRecipientChange() {
+    const sel = document.getElementById('recipient-select');
+    const inp = document.getElementById('chat-id');
+    if (sel.value === '__custom__') {
+      inp.value = '';
+      inp.focus();
+    } else {
+      inp.value = sel.value;
+    }
+  }
 
   // ── Toolbar helpers ──────────────────────────────────────────────
   function wrap(before, after) {

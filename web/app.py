@@ -1732,9 +1732,32 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         if not _authed(session):
             return _redirect_login()
         default_chat = (os.getenv("OWNER_ID", "") or "").strip()
+
+        # Offer the bot's known groups as recipients (titles fetched live,
+        # best-effort — fall back to the chat id if the lookup fails).
+        async with get_session() as s:
+            rows = list((
+                await s.execute(select(GroupSettings).order_by(GroupSettings.chat_id))
+            ).scalars().all())
+
+        async def _title(cid: int) -> str:
+            if not _bot:
+                return ""
+            try:
+                chat = await asyncio.wait_for(_bot.get_chat(cid), timeout=4)
+                return chat.title or ""
+            except Exception:
+                return ""
+
+        titles = await asyncio.gather(*[_title(r.chat_id) for r in rows]) if rows else []
+        groups = [
+            {"chat_id": r.chat_id, "title": t, "active": r.is_active}
+            for r, t in zip(rows, titles)
+        ]
         return templates.TemplateResponse(request, "composer.html", {
             "active": "composer",
             "default_chat_id": default_chat,
+            "groups": groups,
         })
 
     @app.post("/composer/send")
