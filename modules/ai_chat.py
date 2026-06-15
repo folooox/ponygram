@@ -34,6 +34,7 @@ from bot.components import (
 )
 from bot.database import get_bot_config, get_group_settings
 from bot.logger import get_logger
+from bot.rich_message import send_rich, send_rich_draft
 from bot.router import registry
 
 log = get_logger(__name__)
@@ -47,10 +48,22 @@ _history: dict[tuple[int, int], list[dict]] = defaultdict(list)
 _SYSTEM_PROMPT = (
     "You are Ponygram, a helpful and friendly Telegram bot assistant. "
     "Answer concisely and accurately. "
-    "Format responses using plain text; avoid Markdown since Telegram's HTML "
-    "mode is used — use <b>bold</b>, <i>italic</i>, and <code>code</code> "
-    "HTML tags if needed. "
     "Keep replies under 3000 characters when possible."
+)
+
+# Output-format directives appended to the (web-editable) system prompt at call
+# time. Which one is used depends on the delivery path, not the template:
+#   • Rich path (private chats, Bot API 10.1 sendRichMessage): Markdown.
+#   • Legacy path (groups, and rich fallback): Telegram HTML.
+_FMT_RICH = (
+    "\n\nFormat your response in Markdown. Headings, **bold**, *italic*, "
+    "`inline code`, fenced code blocks, bullet/numbered lists, tables, and "
+    "> blockquotes are all supported and render natively. Do not use HTML tags."
+)
+_FMT_HTML = (
+    "\n\nFormat your response using Telegram HTML: <b>bold</b>, <i>italic</i>, "
+    "<code>code</code>, <pre> blocks, and <a href=\"…\">links</a>. "
+    "Do not use Markdown syntax."
 )
 
 
@@ -73,8 +86,20 @@ def _trim_history(key: tuple[int, int]) -> None:
         _history[key] = h[-max_msgs:]
 
 
-async def _stream_claude(messages: list[dict], status_msg) -> str:
-    """Stream Claude response, editing status_msg every ~1.5s. Returns full text."""
+async def _stream_claude(
+    messages: list[dict],
+    *,
+    bot,
+    chat_id: int,
+    status_msg,
+    use_rich: bool,
+) -> str:
+    """Stream a Claude response with a live preview, returning the full text.
+
+    Two preview paths share the same ~1.5s throttle:
+      • ``use_rich`` (private chats): push partials via ``sendRichMessageDraft``
+        (animated rich draft); no status message is involved.
+      • legacy (groups / fallback): edit ``status_msg`` with the growing text."""
     api_key = await _get_api_key()
     if not api_key:
         raise RuntimeError(
@@ -90,8 +115,10 @@ async def _stream_claude(messages: list[dict], status_msg) -> str:
     last_edit = 0.0
     EDIT_INTERVAL = 1.5
 
-    # System prompt is editable in the web 组件中心 (falls back to default).
+    # System prompt is editable in the web 组件中心 (falls back to default); the
+    # output-format directive is chosen by the delivery path, not the template.
     system_prompt = await render.render("ai_chat", "system_prompt")
+    system_prompt += _FMT_RICH if use_rich else _FMT_HTML
 
     async with client.messages.stream(
         model="claude-opus-4-7",
@@ -104,13 +131,51 @@ async def _stream_claude(messages: list[dict], status_msg) -> str:
             full_text += chunk
             now = asyncio.get_event_loop().time()
             if now - last_edit >= EDIT_INTERVAL and full_text.strip():
-                try:
-                    await status_msg.edit_text(full_text.rstrip() + " ✍️")
+                if use_rich:
+                    # Drafts are best-effort progress; ignore failures here — the
+                    # final send_rich decides rich-vs-legacy delivery.
+                    await send_rich_draft(bot, chat_id, full_text.rstrip())
                     last_edit = now
-                except TelegramError:
-                    pass
+                else:
+                    try:
+                        await status_msg.edit_text(full_text.rstrip() + " ✍️")
+                        last_edit = now
+                    except TelegramError:
+                        pass
 
     return full_text.strip()
+
+
+async def _deliver_error(bot, chat_id: int, status_msg, text: str) -> None:
+    """Show an error on the status message (legacy path) or as a fresh message
+    (rich path, which has no status message)."""
+    try:
+        if status_msg is not None:
+            await status_msg.edit_text(text)
+        else:
+            await bot.send_message(chat_id, text)
+    except TelegramError:
+        pass
+
+
+async def _deliver_legacy(msg, status_msg, final: str) -> None:
+    """Send the final text via the legacy HTML path, falling back to plain text.
+
+    Edits ``status_msg`` when present (groups), otherwise sends a fresh reply
+    (rich path that fell back after streaming)."""
+    async def _put(text: str, **kw):
+        if status_msg is not None:
+            await status_msg.edit_text(text, **kw)
+        else:
+            await msg.reply_text(text, **kw)
+
+    try:
+        await _put(final, parse_mode=ParseMode.HTML)
+    except TelegramError:
+        try:
+            await _put(final)
+        except TelegramError as e:
+            log.warning("Failed to send Claude response", error=str(e))
 
 
 async def _handle_ai_message(update: Update, context, user_text: str) -> None:
@@ -123,36 +188,45 @@ async def _handle_ai_message(update: Update, context, user_text: str) -> None:
     _history[key].append({"role": "user", "content": user_text})
     _trim_history(key)
 
-    await context.bot.send_chat_action(chat.id, ChatAction.TYPING)
-    status = await msg.reply_text("💭 Thinking…")
+    bot = context.bot
+    # Rich draft streaming is private-chat only (Bot API 10.1). Groups keep the
+    # edit-based "typing" preview + HTML final exactly as before.
+    use_rich = chat.type == "private"
+
+    await bot.send_chat_action(chat.id, ChatAction.TYPING)
+    status = None if use_rich else await msg.reply_text("💭 Thinking…")
 
     try:
-        response_text = await _stream_claude(list(_history[key]), status)
+        response_text = await _stream_claude(
+            list(_history[key]), bot=bot, chat_id=chat.id,
+            status_msg=status, use_rich=use_rich,
+        )
     except RuntimeError as e:
-        await status.edit_text(f"❌ {e}")
+        await _deliver_error(bot, chat.id, status, f"❌ {e}")
         _history[key].pop()
         return
     except Exception as e:
         log.warning("Claude API error", error=str(e))
-        await status.edit_text("❌ Failed to get a response from Claude. Please try again.")
+        await _deliver_error(bot, chat.id, status,
+                             "❌ Failed to get a response from Claude. Please try again.")
         _history[key].pop()
         return
 
     if not response_text:
-        await status.edit_text("❌ Received an empty response. Please try again.")
+        await _deliver_error(bot, chat.id, status,
+                             "❌ Received an empty response. Please try again.")
         _history[key].pop()
         return
 
     _history[key].append({"role": "assistant", "content": response_text})
-    final = response_text if len(response_text) <= 4000 else response_text[:3997] + "…"
 
-    try:
-        await status.edit_text(final, parse_mode=ParseMode.HTML)
-    except TelegramError:
-        try:
-            await status.edit_text(final)
-        except TelegramError as e:
-            log.warning("Failed to send Claude response", error=str(e))
+    # Rich delivery first (private chats). On any failure fall back to the legacy
+    # send WITHOUT re-calling Claude — the response is already in hand.
+    if use_rich and await send_rich(bot, chat.id, response_text, reply_to=msg.message_id):
+        return
+
+    final = response_text if len(response_text) <= 4000 else response_text[:3997] + "…"
+    await _deliver_legacy(msg, status, final)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +316,7 @@ _COMPONENT = Component(
             key="system_prompt",
             name="系统提示词 (System Prompt)",
             default=_SYSTEM_PROMPT,
-            help="定义 AI 的人设与回复风格。无占位符，整段即为发给模型的 system 提示。",
+            help="定义 AI 的人设与回复风格。无占位符，整段即为发给模型的 system 提示。输出格式（私聊用富文本 Markdown，群聊用 HTML）会自动追加，无需在此说明。",
         ),
     ],
     order=10,

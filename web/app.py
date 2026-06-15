@@ -35,6 +35,7 @@ from fastapi.templating import Jinja2Templates
 
 from bot import render
 from bot.components import all_components, get_component, is_module_enabled
+from bot.rich_message import send_rich
 from bot.database import (
     delete_template,
     get_all_templates,
@@ -1721,5 +1722,50 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)[:300]})
         return JSONResponse(result)
+
+    # ------------------------------------------------------------------ #
+    # Message Composer — edit Markdown, live-preview, send via bot DM      #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/composer", response_class=HTMLResponse)
+    async def composer_page(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return _redirect_login()
+        default_chat = (os.getenv("OWNER_ID", "") or "").strip()
+        return templates.TemplateResponse(request, "composer.html", {
+            "active": "composer",
+            "default_chat_id": default_chat,
+        })
+
+    @app.post("/composer/send")
+    async def composer_send(request: Request, session: Optional[str] = Cookie(None)):
+        if not _authed(session):
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+        if not _bot:
+            return JSONResponse({"ok": False, "error": "bot not available"}, status_code=503)
+
+        body = await request.json()
+        text = (body.get("text") or "").strip()
+        chat_ref = (str(body.get("chat_id") or "").strip()
+                    or (os.getenv("OWNER_ID", "") or "").strip())
+        if not text:
+            return JSONResponse({"ok": False, "error": "empty message"})
+        if not chat_ref:
+            return JSONResponse({"ok": False, "error": "no recipient (set chat id or OWNER_ID)"})
+
+        # Accept a numeric id or @username / t.me link.
+        chat_id: Any = _parse_chat_ref(chat_ref) or chat_ref
+        if isinstance(chat_id, str) and chat_id.lstrip("-").isdigit():
+            chat_id = int(chat_id)
+
+        # Prefer a native Bot API 10.1 rich message (Markdown rendered server-side).
+        try:
+            if await send_rich(_bot, chat_id, text):
+                return JSONResponse({"ok": True, "mode": "rich"})
+            # Fallback: server too old / payload rejected → send the raw text plainly.
+            await _bot.send_message(chat_id, text)
+            return JSONResponse({"ok": True, "mode": "plain"})
+        except Exception as e:
+            return JSONResponse({"ok": False, "error": str(e)[:300]})
 
     return app

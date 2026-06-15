@@ -1,0 +1,300 @@
+{% extends "base.html" %}
+{% block title %}消息编辑器 · Composer · Ponygram Admin{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h4 mb-0">
+    <i class="bi bi-pencil-square me-2"></i>
+    <span data-zh="消息编辑器" data-en="Composer">Composer</span>
+  </h1>
+</div>
+
+<p class="text-muted small">
+  <span data-zh="用 Markdown 编辑消息，右侧实时预览（与 Telegram 富文本渲染一致），确认后由机器人私发给你。"
+        data-en="Compose in Markdown, preview live on the right (matches Telegram rich rendering), then send it to yourself via the bot.">
+    Compose in Markdown, preview live on the right (matches Telegram rich rendering), then send it to yourself via the bot.
+  </span>
+</p>
+
+<div class="row g-3">
+  <!-- ============ Editor ============ -->
+  <div class="col-12 col-lg-6">
+    <div class="card h-100">
+      <div class="card-body d-flex flex-column">
+
+        <!-- Recipient -->
+        <label class="form-label small mb-1">
+          <span data-zh="收件人 (Telegram 用户 ID / @用户名)" data-en="Recipient (Telegram user ID / @username)">Recipient (Telegram user ID / @username)</span>
+        </label>
+        <input type="text" class="form-control form-control-sm mb-1" id="chat-id"
+               value="{{ default_chat_id }}" placeholder="123456789">
+        <div class="small text-muted mb-2">
+          <i class="bi bi-info-circle"></i>
+          <span data-zh="默认填入 OWNER_ID。机器人只能私发给已经 /start 过它的用户。"
+                data-en="Defaults to OWNER_ID. The bot can only DM users who have /start-ed it.">
+            Defaults to OWNER_ID. The bot can only DM users who have /start-ed it.
+          </span>
+        </div>
+
+        <!-- Toolbar -->
+        <div class="btn-toolbar mb-2" role="toolbar">
+          <div class="btn-group btn-group-sm flex-wrap" role="group">
+            <button type="button" class="btn btn-outline-secondary" title="Bold"        onclick="wrap('**','**')"><i class="bi bi-type-bold"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Italic"      onclick="wrap('*','*')"><i class="bi bi-type-italic"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Strike"      onclick="wrap('~~','~~')"><i class="bi bi-type-strikethrough"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Spoiler"     onclick="wrap('||','||')"><i class="bi bi-eye-slash"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Highlight"   onclick="wrap('==','==')"><i class="bi bi-highlighter"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Inline code" onclick="wrap('`','`')"><i class="bi bi-code"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Code block"  onclick="wrap('\n```\n','\n```\n')"><i class="bi bi-code-square"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Link"        onclick="wrap('[','](https://)')"><i class="bi bi-link-45deg"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Heading"     onclick="prefix('## ')"><i class="bi bi-type-h2"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="List"        onclick="prefix('- ')"><i class="bi bi-list-ul"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Quote"       onclick="prefix('> ')"><i class="bi bi-quote"></i></button>
+          </div>
+        </div>
+
+        <!-- Markdown input -->
+        <textarea class="form-control font-monospace flex-grow-1" id="md" rows="16"
+                  spellcheck="false"
+                  placeholder="# Hello&#10;**bold**, *italic*, `code`, ||spoiler||&#10;- item one&#10;- item two&#10;&gt; a quote"></textarea>
+
+        <div class="d-flex justify-content-between align-items-center mt-2">
+          <small class="text-muted" id="bytecount">0 / 32768 bytes</small>
+          <div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('md').value='';sync();">
+              <span data-zh="清空" data-en="Clear">Clear</span>
+            </button>
+            <button type="button" class="btn btn-sm btn-primary" id="send-btn" onclick="send()">
+              <i class="bi bi-send"></i> <span data-zh="发送" data-en="Send">Send</span>
+            </button>
+          </div>
+        </div>
+        <div id="status" class="mt-2"></div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ Preview ============ -->
+  <div class="col-12 col-lg-6">
+    <div class="card h-100">
+      <div class="card-body">
+        <div class="small text-muted mb-2">
+          <i class="bi bi-telegram"></i>
+          <span data-zh="预览（近似 Telegram 渲染）" data-en="Preview (approximate Telegram rendering)">Preview (approximate Telegram rendering)</span>
+        </div>
+        <div class="tg-screen">
+          <div class="tg-bubble" id="preview"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .tg-screen {
+    background: #0e1621;
+    border-radius: .6rem;
+    padding: 1rem;
+    min-height: 360px;
+  }
+  [data-bs-theme="light"] .tg-screen { background: #c3d4e6; }
+  .tg-bubble {
+    background: #182533;
+    color: #e9eef3;
+    border-radius: .9rem;
+    border-top-left-radius: .25rem;
+    padding: .55rem .8rem;
+    max-width: 92%;
+    width: fit-content;
+    box-shadow: 0 1px 1px rgba(0,0,0,.25);
+    font-size: .95rem;
+    line-height: 1.45;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+  }
+  [data-bs-theme="light"] .tg-bubble { background: #ffffff; color: #0f1419; }
+  .tg-bubble :first-child { margin-top: 0; }
+  .tg-bubble :last-child  { margin-bottom: 0; }
+  .tg-bubble h1, .tg-bubble h2, .tg-bubble h3,
+  .tg-bubble h4, .tg-bubble h5, .tg-bubble h6 {
+    font-weight: 700; line-height: 1.25; margin: .5em 0 .3em;
+  }
+  .tg-bubble h1 { font-size: 1.3em; }
+  .tg-bubble h2 { font-size: 1.18em; }
+  .tg-bubble h3 { font-size: 1.07em; }
+  .tg-bubble p { margin: 0 0 .5em; }
+  .tg-bubble a { color: #6ab3f3; text-decoration: none; }
+  .tg-bubble code {
+    background: rgba(255,255,255,.10); color: #e9eef3;
+    padding: .12em .35em; border-radius: .3em;
+    font-size: .9em; font-family: var(--bs-font-monospace);
+  }
+  [data-bs-theme="light"] .tg-bubble code { background: #eef2f6; color: #be185d; }
+  .tg-bubble pre {
+    background: rgba(0,0,0,.30); border-radius: .5rem;
+    padding: .6rem .75rem; overflow-x: auto; margin: .4em 0;
+  }
+  [data-bs-theme="light"] .tg-bubble pre { background: #f1f5f9; }
+  .tg-bubble pre code { background: transparent; padding: 0; color: inherit; }
+  .tg-bubble blockquote {
+    border-left: 3px solid #6ab3f3; margin: .4em 0;
+    padding: .1em .75rem; color: inherit; opacity: .9;
+  }
+  .tg-bubble ul, .tg-bubble ol { margin: .2em 0 .5em; padding-left: 1.4em; }
+  .tg-bubble table {
+    border-collapse: collapse; margin: .4em 0; font-size: .9em;
+  }
+  .tg-bubble th, .tg-bubble td {
+    border: 1px solid rgba(255,255,255,.18); padding: .25em .5em;
+  }
+  [data-bs-theme="light"] .tg-bubble th,
+  [data-bs-theme="light"] .tg-bubble td { border-color: #cbd5e1; }
+  .tg-bubble hr { border-color: rgba(255,255,255,.18); margin: .6em 0; }
+  .tg-bubble mark { background: #fde68a; color: #1f2937; padding: 0 .15em; border-radius: .2em; }
+  /* Telegram-style spoiler: blurred until clicked */
+  .tg-spoiler {
+    background: rgba(255,255,255,.10); border-radius: .25em;
+    filter: blur(5px); cursor: pointer; transition: filter .15s;
+    user-select: none;
+  }
+  .tg-spoiler.revealed { filter: none; user-select: auto; }
+  .tg-empty { color: #7a8a99; font-style: italic; }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script>
+  const md = document.getElementById('md');
+  const preview = document.getElementById('preview');
+  const byteEl = document.getElementById('bytecount');
+  const statusEl = document.getElementById('status');
+  const MAX_BYTES = 32768;
+
+  if (window.marked) {
+    marked.setOptions({ gfm: true, breaks: true });
+  }
+
+  // Telegram rich extras that standard Markdown lacks: ||spoiler|| and ==highlight==.
+  // Wrap matches in unlikely ASCII sentinels (distinct open/close) so they survive
+  // marked + DOMPurify, then swap them for real tags. Inner text is left intact so
+  // marked still formats it (e.g. ||**bold**||).
+  function preExtras(src) {
+    return src
+      .replace(/\|\|([\s\S]+?)\|\|/g, '@@SPO@@$1@@SPC@@')
+      .replace(/==([^\n=]+?)==/g, '@@MKO@@$1@@MKC@@');
+  }
+  function postExtras(html) {
+    return html
+      .replace(/@@SPO@@/g, '<span class="tg-spoiler">')
+      .replace(/@@SPC@@/g, '</span>')
+      .replace(/@@MKO@@/g, '<mark>')
+      .replace(/@@MKC@@/g, '</mark>');
+  }
+
+  function render(text) {
+    if (!text.trim()) {
+      return '<span class="tg-empty" data-zh="（空消息）" data-en="(empty message)">(empty message)</span>';
+    }
+    let html;
+    if (window.marked && window.DOMPurify) {
+      html = marked.parse(preExtras(text));
+      html = postExtras(html);
+      html = DOMPurify.sanitize(html, { ADD_ATTR: ['class'] });
+    } else {
+      // Graceful degradation if CDN assets are blocked.
+      const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      html = '<pre style="white-space:pre-wrap">' + esc + '</pre>';
+    }
+    return html;
+  }
+
+  function sync() {
+    preview.innerHTML = render(md.value);
+    const bytes = new Blob([md.value]).size;
+    byteEl.textContent = bytes + ' / ' + MAX_BYTES + ' bytes';
+    byteEl.classList.toggle('text-danger', bytes > MAX_BYTES);
+    // re-apply current language to freshly rendered i18n nodes
+    if (typeof _applyLang === 'function') {
+      _applyLang(localStorage.getItem('pg-lang') || 'en');
+    }
+  }
+
+  // Click to reveal spoilers in the preview.
+  preview.addEventListener('click', (e) => {
+    if (e.target.classList && e.target.classList.contains('tg-spoiler')) {
+      e.target.classList.toggle('revealed');
+    }
+  });
+
+  // ── Toolbar helpers ──────────────────────────────────────────────
+  function wrap(before, after) {
+    const s = md.selectionStart, e = md.selectionEnd;
+    const sel = md.value.slice(s, e);
+    md.value = md.value.slice(0, s) + before + sel + after + md.value.slice(e);
+    md.focus();
+    md.selectionStart = s + before.length;
+    md.selectionEnd = e + before.length;
+    sync();
+  }
+  function prefix(p) {
+    const s = md.selectionStart;
+    const lineStart = md.value.lastIndexOf('\n', s - 1) + 1;
+    md.value = md.value.slice(0, lineStart) + p + md.value.slice(lineStart);
+    md.focus();
+    md.selectionStart = md.selectionEnd = s + p.length;
+    sync();
+  }
+
+  // ── Send ─────────────────────────────────────────────────────────
+  async function send() {
+    const btn = document.getElementById('send-btn');
+    const text = md.value.trim();
+    const chatId = document.getElementById('chat-id').value.trim();
+    statusEl.innerHTML = '';
+    if (!text) { showStatus('danger', 'Message is empty.', '消息为空。'); return; }
+    if (new Blob([text]).size > MAX_BYTES) {
+      showStatus('danger', 'Message exceeds 32768 bytes.', '消息超过 32768 字节。'); return;
+    }
+    const orig = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    try {
+      const r = await fetch('/composer/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, chat_id: chatId }),
+      });
+      const data = await r.json();
+      if (data.ok && data.mode === 'plain') {
+        showStatus('warning',
+          'Sent as plain text (rich messages unsupported by this Bot API server).',
+          '已以纯文本发送（当前 Bot API 服务器不支持富文本）。');
+      } else if (data.ok) {
+        showStatus('success', 'Sent ✓', '已发送 ✓');
+      } else {
+        showStatus('danger', 'Error: ' + (data.error || 'unknown'), '错误：' + (data.error || '未知'));
+      }
+    } catch (err) {
+      showStatus('danger', 'Network error: ' + err, '网络错误：' + err);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = orig;
+    }
+  }
+
+  // Build the status alert with textContent (safe against quotes/HTML in errors).
+  function showStatus(kind, en, zh) {
+    const isCn = (localStorage.getItem('pg-lang') || 'en') === 'zh';
+    const div = document.createElement('div');
+    div.className = 'alert alert-' + kind + ' py-2 mb-0';
+    div.textContent = isCn ? zh : en;
+    statusEl.innerHTML = '';
+    statusEl.appendChild(div);
+  }
+
+  md.addEventListener('input', sync);
+  document.addEventListener('DOMContentLoaded', sync);
+  sync();
+</script>
+{% endblock %}
