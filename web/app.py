@@ -1767,28 +1767,71 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
         if not _bot:
             return JSONResponse({"ok": False, "error": "bot not available"}, status_code=503)
 
-        body = await request.json()
-        text = (body.get("text") or "").strip()
-        chat_ref = (str(body.get("chat_id") or "").strip()
+        from telegram import InputMediaPhoto
+
+        # The composer posts an ordered list of parts (text + photo) as multipart:
+        #   manifest = JSON [{"type":"text","text":...}|{"type":"photo","file":"fileN"}]
+        #   fileN    = uploaded image bytes (pasted/uploaded pictures or math PNGs)
+        form = await request.form()
+        chat_ref = (str(form.get("chat_id") or "").strip()
                     or (os.getenv("OWNER_ID", "") or "").strip())
-        if not text:
-            return JSONResponse({"ok": False, "error": "empty message"})
         if not chat_ref:
             return JSONResponse({"ok": False, "error": "no recipient (set chat id or OWNER_ID)"})
+
+        try:
+            manifest = _json.loads(form.get("manifest") or "[]")
+        except Exception:
+            return JSONResponse({"ok": False, "error": "bad manifest"})
+        if not isinstance(manifest, list) or not manifest:
+            return JSONResponse({"ok": False, "error": "empty message"})
+
+        # Read every uploaded file once, keyed by its form field name.
+        files: dict[str, bytes] = {}
+        for key, val in form.multi_items():
+            if isinstance(val, UploadFile):
+                files[key] = await val.read()
 
         # Accept a numeric id or @username / t.me link.
         chat_id: Any = _parse_chat_ref(chat_ref) or chat_ref
         if isinstance(chat_id, str) and chat_id.lstrip("-").isdigit():
             chat_id = int(chat_id)
 
-        # Prefer a native Bot API 10.1 rich message (Markdown rendered server-side).
+        any_plain = False
         try:
-            if await send_rich(_bot, chat_id, text):
-                return JSONResponse({"ok": True, "mode": "rich"})
-            # Fallback: server too old / payload rejected → send the raw text plainly.
-            await _bot.send_message(chat_id, text)
-            return JSONResponse({"ok": True, "mode": "plain"})
+            # Consecutive photos are coalesced into a single media group (≤10).
+            pending: list[bytes] = []
+
+            async def flush_media() -> None:
+                if not pending:
+                    return
+                if len(pending) == 1:
+                    await _bot.send_photo(chat_id, photo=pending[0])
+                else:
+                    group = [InputMediaPhoto(b) for b in pending[:10]]
+                    await _bot.send_media_group(chat_id, group)
+                pending.clear()
+
+            for part in manifest:
+                ptype = part.get("type")
+                if ptype == "photo":
+                    blob = files.get(part.get("file", ""))
+                    if blob:
+                        pending.append(blob)
+                        if len(pending) >= 10:
+                            await flush_media()
+                elif ptype == "text":
+                    await flush_media()
+                    text = (part.get("text") or "").strip()
+                    if not text:
+                        continue
+                    # Prefer a native Bot API 10.1 rich message; fall back to plain.
+                    if not await send_rich(_bot, chat_id, text):
+                        await _bot.send_message(chat_id, text)
+                        any_plain = True
+            await flush_media()
         except Exception as e:
             return JSONResponse({"ok": False, "error": str(e)[:300]})
+
+        return JSONResponse({"ok": True, "mode": "plain" if any_plain else "rich"})
 
     return app

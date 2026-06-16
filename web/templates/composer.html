@@ -2,6 +2,16 @@
 {% block title %}消息编辑器 · Composer · Ponygram Admin{% endblock %}
 {% block content %}
 
+<!-- MathJax (tex-svg) — manual typeset only; we call tex2svg() ourselves. -->
+<script>
+  window.MathJax = {
+    tex: { inlineMath: [['$', '$']], displayMath: [['$$', '$$']] },
+    svg: { fontCache: 'none' },        // self-contained SVG → rasterizable
+    startup: { typeset: false }
+  };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js" id="MathJax-script" async></script>
+
 <div class="d-flex justify-content-between align-items-center mb-3">
   <h1 class="h4 mb-0">
     <i class="bi bi-pencil-square me-2"></i>
@@ -10,9 +20,9 @@
 </div>
 
 <p class="text-muted small">
-  <span data-zh="用 Markdown 编辑消息，右侧实时预览（与 Telegram 富文本渲染一致），确认后由机器人私发给你。"
-        data-en="Compose in Markdown, preview live on the right (matches Telegram rich rendering), then send it to yourself via the bot.">
-    Compose in Markdown, preview live on the right (matches Telegram rich rendering), then send it to yourself via the bot.
+  <span data-zh="用 Markdown 编辑消息，可直接粘贴/插入图片、写数学公式与表格，右侧实时预览，确认后由机器人发送。图片与公式会作为图片单独发出。"
+        data-en="Compose in Markdown — paste/insert images, write math & tables, preview live, then send via the bot. Images and formulas are sent as photos.">
+    Compose in Markdown — paste/insert images, write math &amp; tables, preview live, then send via the bot.
   </span>
 </p>
 
@@ -48,7 +58,7 @@
         </div>
 
         <!-- Toolbar -->
-        <div class="btn-toolbar mb-2" role="toolbar">
+        <div class="btn-toolbar mb-2 gap-2" role="toolbar">
           <div class="btn-group btn-group-sm flex-wrap" role="group">
             <button type="button" class="btn btn-outline-secondary" title="Bold"        onclick="wrap('**','**')"><i class="bi bi-type-bold"></i></button>
             <button type="button" class="btn btn-outline-secondary" title="Italic"      onclick="wrap('*','*')"><i class="bi bi-type-italic"></i></button>
@@ -62,17 +72,23 @@
             <button type="button" class="btn btn-outline-secondary" title="List"        onclick="prefix('- ')"><i class="bi bi-list-ul"></i></button>
             <button type="button" class="btn btn-outline-secondary" title="Quote"       onclick="prefix('> ')"><i class="bi bi-quote"></i></button>
           </div>
+          <div class="btn-group btn-group-sm flex-wrap" role="group">
+            <button type="button" class="btn btn-outline-primary" title="Insert image / 插入图片" onclick="document.getElementById('img-input').click()"><i class="bi bi-image"></i></button>
+            <button type="button" class="btn btn-outline-primary" title="Math formula (LaTeX) / 数学公式" onclick="wrap('$$ ',' $$')"><i class="bi bi-calculator"></i></button>
+            <button type="button" class="btn btn-outline-primary" title="Insert table / 插入表格" data-bs-toggle="modal" data-bs-target="#tableModal"><i class="bi bi-table"></i></button>
+          </div>
         </div>
+        <input type="file" id="img-input" accept="image/*" multiple class="d-none" onchange="onPickImages(this)">
 
         <!-- Markdown input -->
         <textarea class="form-control font-monospace flex-grow-1" id="md" rows="16"
                   spellcheck="false"
-                  placeholder="# Hello&#10;**bold**, *italic*, `code`, ||spoiler||&#10;- item one&#10;- item two&#10;&gt; a quote"></textarea>
+                  placeholder="# Hello&#10;**bold**, *italic*, `code`, ||spoiler||&#10;Paste an image, or write math: $$ E = mc^2 $$&#10;- item one&#10;- item two&#10;&gt; a quote"></textarea>
 
         <div class="d-flex justify-content-between align-items-center mt-2">
           <small class="text-muted" id="bytecount">0 / 32768 bytes</small>
           <div>
-            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('md').value='';sync();">
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearAll()">
               <span data-zh="清空" data-en="Clear">Clear</span>
             </button>
             <button type="button" class="btn btn-sm btn-primary" id="send-btn" onclick="send()">
@@ -97,6 +113,44 @@
         <div class="tg-screen">
           <div class="tg-bubble" id="preview"></div>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Table editor modal ============ -->
+<div class="modal fade" id="tableModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">
+          <i class="bi bi-table me-1"></i>
+          <span data-zh="插入表格" data-en="Insert table">Insert table</span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="d-flex flex-wrap gap-2 align-items-end mb-3">
+          <div>
+            <label class="form-label small mb-1" data-zh="行" data-en="Rows">Rows</label>
+            <input type="number" id="tbl-rows" class="form-control form-control-sm" value="3" min="1" max="20" style="width:90px">
+          </div>
+          <div>
+            <label class="form-label small mb-1" data-zh="列" data-en="Cols">Cols</label>
+            <input type="number" id="tbl-cols" class="form-control form-control-sm" value="3" min="1" max="10" style="width:90px">
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-secondary" onclick="buildTableGrid()">
+            <i class="bi bi-grid-3x3"></i> <span data-zh="生成网格" data-en="Build grid">Build grid</span>
+          </button>
+          <div class="ms-auto small text-muted" data-zh="第一行为表头" data-en="First row is the header">First row is the header</div>
+        </div>
+        <div id="tbl-grid" class="table-responsive"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal" data-zh="取消" data-en="Cancel">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="insertTable()">
+          <i class="bi bi-plus-lg"></i> <span data-zh="插入" data-en="Insert">Insert</span>
+        </button>
       </div>
     </div>
   </div>
@@ -171,6 +225,11 @@
   }
   .tg-spoiler.revealed { filter: none; user-select: auto; }
   .tg-empty { color: #7a8a99; font-style: italic; }
+  /* Inserted media */
+  .tg-bubble img.tg-photo { max-width: 100%; border-radius: .5rem; margin: .35em 0; display: block; }
+  .tg-bubble .tg-photo.broken { color: #f08a8a; font-style: italic; }
+  .tg-math { display: inline-block; vertical-align: middle; line-height: 0; }
+  .tg-math svg { max-width: 100%; vertical-align: middle; }
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
@@ -182,15 +241,42 @@
   const statusEl = document.getElementById('status');
   const MAX_BYTES = 32768;
 
+  // Pasted/inserted images: id → { blob, url (objectURL), name }.
+  const assets = new Map();
+  let _assetSeq = 0;
+  // Per-render scratch for extras protected from marked.
+  let _mathStore = [];
+  let _imgStore = [];
+
   if (window.marked) {
     marked.setOptions({ gfm: true, breaks: true });
   }
 
-  // Telegram rich extras that standard Markdown lacks: ||spoiler|| and ==highlight==.
-  // Wrap matches in unlikely ASCII sentinels (distinct open/close) so they survive
-  // marked + DOMPurify, then swap them for real tags. Inner text is left intact so
-  // marked still formats it (e.g. ||**bold**||).
+  function escAttr(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function clamp(v, a, b) { v = parseInt(v, 10) || a; return Math.max(a, Math.min(b, v)); }
+
+  // Pull Telegram/Math/image extras out before marked, restore them after.
+  // ||spoiler||, ==highlight==, $math$, $$display$$, and ![](asset:id) images.
   function preExtras(src) {
+    _mathStore = [];
+    _imgStore = [];
+    // image assets first so their alt text isn't mangled
+    src = src.replace(/!\[([^\]]*)\]\(asset:([\w-]+)\)/g, (m, alt, id) => {
+      _imgStore.push({ id, alt });
+      return '@@IMG' + (_imgStore.length - 1) + '@@';
+    });
+    // display math before inline math
+    src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, tex) => {
+      _mathStore.push({ tex, display: true });
+      return '@@MATH' + (_mathStore.length - 1) + '@@';
+    });
+    src = src.replace(/\$([^\$\n]+?)\$/g, (m, tex) => {
+      _mathStore.push({ tex, display: false });
+      return '@@MATH' + (_mathStore.length - 1) + '@@';
+    });
     return src
       .replace(/\|\|([\s\S]+?)\|\|/g, '@@SPO@@$1@@SPC@@')
       .replace(/==([^\n=]+?)==/g, '@@MKO@@$1@@MKC@@');
@@ -200,7 +286,13 @@
       .replace(/@@SPO@@/g, '<span class="tg-spoiler">')
       .replace(/@@SPC@@/g, '</span>')
       .replace(/@@MKO@@/g, '<mark>')
-      .replace(/@@MKC@@/g, '</mark>');
+      .replace(/@@MKC@@/g, '</mark>')
+      .replace(/@@IMG(\d+)@@/g, (m, i) => {
+        const o = _imgStore[+i] || {};
+        return '<img class="tg-photo" data-asset="' + escAttr(o.id || '') +
+               '" alt="' + escAttr(o.alt || '') + '">';
+      })
+      .replace(/@@MATH(\d+)@@/g, '<span class="tg-math" data-mi="$1"></span>');
   }
 
   function render(text) {
@@ -213,19 +305,38 @@
       html = postExtras(html);
       html = DOMPurify.sanitize(html, { ADD_ATTR: ['class'] });
     } else {
-      // Graceful degradation if CDN assets are blocked.
       const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       html = '<pre style="white-space:pre-wrap">' + esc + '</pre>';
     }
     return html;
   }
 
+  // Resolve image assets and render math into the freshly-built preview DOM.
+  function hydratePreview() {
+    preview.querySelectorAll('img.tg-photo[data-asset]').forEach((img) => {
+      const a = assets.get(img.dataset.asset);
+      if (a) { img.src = a.url; }
+      else { img.replaceWith(Object.assign(document.createElement('span'),
+              { className: 'tg-photo broken', textContent: '[image removed]' })); }
+    });
+    const mathReady = window.MathJax && typeof MathJax.tex2svg === 'function';
+    preview.querySelectorAll('span.tg-math[data-mi]').forEach((span) => {
+      const o = _mathStore[+span.dataset.mi];
+      if (!o) return;
+      if (mathReady) {
+        try { span.appendChild(MathJax.tex2svg(o.tex, { display: o.display })); return; }
+        catch (e) { /* fall through to raw */ }
+      }
+      span.textContent = (o.display ? '$$' : '$') + o.tex + (o.display ? '$$' : '$');
+    });
+  }
+
   function sync() {
     preview.innerHTML = render(md.value);
+    hydratePreview();
     const bytes = new Blob([md.value]).size;
     byteEl.textContent = bytes + ' / ' + MAX_BYTES + ' bytes';
     byteEl.classList.toggle('text-danger', bytes > MAX_BYTES);
-    // re-apply current language to freshly rendered i18n nodes
     if (typeof _applyLang === 'function') {
       _applyLang(localStorage.getItem('pg-lang') || 'en');
     }
@@ -242,12 +353,8 @@
   function onRecipientChange() {
     const sel = document.getElementById('recipient-select');
     const inp = document.getElementById('chat-id');
-    if (sel.value === '__custom__') {
-      inp.value = '';
-      inp.focus();
-    } else {
-      inp.value = sel.value;
-    }
+    if (sel.value === '__custom__') { inp.value = ''; inp.focus(); }
+    else { inp.value = sel.value; }
   }
 
   // ── Toolbar helpers ──────────────────────────────────────────────
@@ -268,38 +375,212 @@
     md.selectionStart = md.selectionEnd = s + p.length;
     sync();
   }
+  function insertAtCursor(text) {
+    const s = md.selectionStart, e = md.selectionEnd;
+    md.value = md.value.slice(0, s) + text + md.value.slice(e);
+    md.selectionStart = md.selectionEnd = s + text.length;
+    md.focus();
+    sync();
+  }
+  function clearAll() {
+    md.value = '';
+    assets.forEach((a) => { try { URL.revokeObjectURL(a.url); } catch (e) {} });
+    assets.clear();
+    sync();
+  }
+
+  // ── Images: paste & file picker ──────────────────────────────────
+  function addImageBlob(blob, name) {
+    const id = 'img-' + (++_assetSeq);
+    const url = URL.createObjectURL(blob);
+    assets.set(id, { blob, url, name: name || ('image-' + id + '.png') });
+    insertAtCursor('\n![image](asset:' + id + ')\n');
+  }
+  function onPickImages(input) {
+    for (const f of input.files) {
+      if (f.type.startsWith('image/')) addImageBlob(f, f.name);
+    }
+    input.value = '';
+  }
+  md.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    let handled = false;
+    for (const it of items) {
+      if (it.type && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) { addImageBlob(f, f.name); handled = true; }
+      }
+    }
+    if (handled) e.preventDefault();
+  });
+
+  // ── Math: LaTeX → PNG (white bg, black glyphs, readable in any theme) ──
+  async function ensureMathReady() {
+    if (window.MathJax && MathJax.startup && MathJax.startup.promise) {
+      try { await MathJax.startup.promise; } catch (e) { /* ignore */ }
+    }
+  }
+  async function mathToPng(tex, display) {
+    await ensureMathReady();
+    if (!window.MathJax || typeof MathJax.tex2svg !== 'function') {
+      throw new Error('math renderer not loaded');
+    }
+    const holder = document.createElement('div');
+    holder.style.cssText = 'position:absolute;left:-99999px;top:0;font-size:26px;line-height:0;color:#000;';
+    let node;
+    try { node = MathJax.tex2svg(tex, { display: !!display }); }
+    catch (e) { throw new Error('bad formula: ' + tex); }
+    holder.appendChild(node);
+    document.body.appendChild(holder);
+    try {
+      const svg = holder.querySelector('svg');
+      if (!svg) throw new Error('formula render failed');
+      const rect = svg.getBoundingClientRect();
+      const w = Math.max(1, Math.ceil(rect.width));
+      const h = Math.max(1, Math.ceil(rect.height));
+      svg.setAttribute('width', w);
+      svg.setAttribute('height', h);
+      svg.style.color = '#000';
+      return await svgToPng(svg, w, h);
+    } finally { holder.remove(); }
+  }
+  function svgToPng(svg, w, h) {
+    return new Promise((resolve, reject) => {
+      const xml = new XMLSerializer().serializeToString(svg);
+      const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+      const img = new Image();
+      img.onload = () => {
+        const scale = 4, pad = 20;
+        const cw = w * scale + pad * 2, ch = h * scale + pad * 2;
+        const cv = document.createElement('canvas');
+        cv.width = cw; cv.height = ch;
+        const ctx = cv.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, cw, ch);
+        ctx.drawImage(img, pad, pad, w * scale, h * scale);
+        cv.toBlob((b) => b ? resolve(b) : reject(new Error('canvas export failed')), 'image/png');
+      };
+      img.onerror = () => reject(new Error('formula render failed'));
+      img.src = url;
+    });
+  }
+
+  // ── Table editor ─────────────────────────────────────────────────
+  function buildTableGrid() {
+    const rows = clamp(document.getElementById('tbl-rows').value, 1, 20);
+    const cols = clamp(document.getElementById('tbl-cols').value, 1, 10);
+    let h = '<table class="table table-sm table-bordered align-middle mb-0">';
+    for (let r = 0; r < rows; r++) {
+      h += '<tr>';
+      for (let c = 0; c < cols; c++) {
+        const ph = r === 0 ? ('Header ' + (c + 1)) : '';
+        h += '<td class="p-1"><input class="form-control form-control-sm tbl-cell" ' +
+             'data-r="' + r + '" data-c="' + c + '" placeholder="' + ph + '"></td>';
+      }
+      h += '</tr>';
+    }
+    h += '</table>';
+    document.getElementById('tbl-grid').innerHTML = h;
+  }
+  function insertTable() {
+    const cells = document.querySelectorAll('#tbl-grid .tbl-cell');
+    if (!cells.length) { buildTableGrid(); return; }
+    let maxR = 0, maxC = 0;
+    const data = {};
+    cells.forEach((el) => {
+      const r = +el.dataset.r, c = +el.dataset.c;
+      maxR = Math.max(maxR, r); maxC = Math.max(maxC, c);
+      data[r + '_' + c] = el.value.trim().replace(/\|/g, '\\|');
+    });
+    const rows = maxR + 1, cols = maxC + 1;
+    let out = '\n';
+    for (let r = 0; r < rows; r++) {
+      let line = '|';
+      for (let c = 0; c < cols; c++) {
+        line += ' ' + (data[r + '_' + c] || (r === 0 ? ('Header ' + (c + 1)) : '')) + ' |';
+      }
+      out += line + '\n';
+      if (r === 0) {
+        let sep = '|';
+        for (let c = 0; c < cols; c++) sep += ' --- |';
+        out += sep + '\n';
+      }
+    }
+    out += '\n';
+    insertAtCursor(out);
+    const modalEl = document.getElementById('tableModal');
+    const inst = bootstrap.Modal.getInstance(modalEl);
+    if (inst) inst.hide();
+  }
+  // Build a default grid each time the modal opens.
+  document.getElementById('tableModal').addEventListener('shown.bs.modal', () => {
+    if (!document.querySelector('#tbl-grid .tbl-cell')) buildTableGrid();
+  });
 
   // ── Send ─────────────────────────────────────────────────────────
+  // Tokenise the document in order into text runs and photo parts
+  // (uploaded images + math rasterised to PNG), then POST as multipart.
   async function send() {
     const btn = document.getElementById('send-btn');
-    const text = md.value.trim();
     const chatId = document.getElementById('chat-id').value.trim();
     statusEl.innerHTML = '';
-    if (!text) { showStatus('danger', 'Message is empty.', '消息为空。'); return; }
-    if (new Blob([text]).size > MAX_BYTES) {
-      showStatus('danger', 'Message exceeds 32768 bytes.', '消息超过 32768 字节。'); return;
-    }
+    if (!chatId) { showStatus('danger', 'Recipient is empty.', '收件人为空。'); return; }
+    const src = md.value;
+    if (!src.trim()) { showStatus('danger', 'Message is empty.', '消息为空。'); return; }
+
     const orig = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
     try {
-      const r = await fetch('/composer/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, chat_id: chatId }),
-      });
+      const fd = new FormData();
+      const parts = [];
+      let fileIdx = 0, last = 0, m;
+      const tokenRe = /!\[[^\]]*\]\(asset:([\w-]+)\)|\$\$([\s\S]+?)\$\$|\$([^\$\n]+?)\$/g;
+
+      function pushText(t) {
+        t = t.replace(/^\n+|\n+$/g, '');
+        if (!t.trim()) return;
+        if (new Blob([t]).size > MAX_BYTES) throw new Error('one text block exceeds 32768 bytes');
+        parts.push({ type: 'text', text: t });
+      }
+
+      while ((m = tokenRe.exec(src))) {
+        pushText(src.slice(last, m.index));
+        last = m.index + m[0].length;
+        let blob, fname;
+        if (m[1] !== undefined) {
+          const a = assets.get(m[1]);
+          if (!a) continue;
+          blob = a.blob; fname = a.name || 'image.png';
+        } else {
+          const tex = (m[2] !== undefined ? m[2] : m[3]);
+          blob = await mathToPng(tex, m[2] !== undefined);
+          fname = 'formula.png';
+        }
+        const field = 'file' + (fileIdx++);
+        fd.append(field, blob, fname);
+        parts.push({ type: 'photo', file: field });
+      }
+      pushText(src.slice(last));
+
+      if (!parts.length) { showStatus('danger', 'Message is empty.', '消息为空。'); return; }
+
+      fd.append('chat_id', chatId);
+      fd.append('manifest', JSON.stringify(parts));
+
+      const r = await fetch('/composer/send', { method: 'POST', body: fd });
       const data = await r.json();
       if (data.ok && data.mode === 'plain') {
         showStatus('warning',
-          'Sent as plain text (rich messages unsupported by this Bot API server).',
-          '已以纯文本发送（当前 Bot API 服务器不支持富文本）。');
+          'Sent — text parts as plain text (rich messages unsupported by this Bot API server).',
+          '已发送 — 文本以纯文本发送（当前 Bot API 服务器不支持富文本）。');
       } else if (data.ok) {
         showStatus('success', 'Sent ✓', '已发送 ✓');
       } else {
         showStatus('danger', 'Error: ' + (data.error || 'unknown'), '错误：' + (data.error || '未知'));
       }
     } catch (err) {
-      showStatus('danger', 'Network error: ' + err, '网络错误：' + err);
+      showStatus('danger', 'Error: ' + (err.message || err), '错误：' + (err.message || err));
     } finally {
       btn.disabled = false;
       btn.innerHTML = orig;
@@ -318,6 +599,8 @@
 
   md.addEventListener('input', sync);
   document.addEventListener('DOMContentLoaded', sync);
+  // Re-render once MathJax finishes loading so existing formulas show up.
+  ensureMathReady().then(sync);
   sync();
 </script>
 {% endblock %}
