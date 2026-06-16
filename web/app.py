@@ -1821,6 +1821,12 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                             await flush_media()
                 elif ptype == "text":
                     await flush_media()
+                    # Blocks with an expandable quote arrive pre-rendered as
+                    # Telegram HTML (rich messages can't collapse quotes).
+                    html = (part.get("html") or "").strip()
+                    if html:
+                        await _bot.send_message(chat_id, html, parse_mode="HTML")
+                        continue
                     text = (part.get("text") or "").strip()
                     if not text:
                         continue

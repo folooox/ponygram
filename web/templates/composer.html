@@ -20,8 +20,8 @@
 </div>
 
 <p class="text-muted small">
-  <span data-zh="用 Markdown 编辑消息，可直接粘贴/插入图片、写数学公式与表格，右侧实时预览，确认后由机器人发送。图片与公式会作为图片单独发出。"
-        data-en="Compose in Markdown — paste/insert images, write math & tables, preview live, then send via the bot. Images and formulas are sent as photos.">
+  <span data-zh="用 Markdown 编辑消息，可直接粘贴/插入图片、写数学公式与表格，右侧实时预览，确认后由机器人发送。相邻图片自动并排成相册，公式作为图片单独发出；可折叠引用会以 Telegram HTML 单独发送（该条不含表格/标题）。"
+        data-en="Compose in Markdown — paste/insert images, write math & tables, preview live, then send via the bot. Adjacent images become a side-by-side album; formulas send as photos. Expandable quotes send via Telegram HTML (that message has no tables/headings).">
     Compose in Markdown — paste/insert images, write math &amp; tables, preview live, then send via the bot.
   </span>
 </p>
@@ -71,6 +71,7 @@
             <button type="button" class="btn btn-outline-secondary" title="Heading"     onclick="prefix('## ')"><i class="bi bi-type-h2"></i></button>
             <button type="button" class="btn btn-outline-secondary" title="List"        onclick="prefix('- ')"><i class="bi bi-list-ul"></i></button>
             <button type="button" class="btn btn-outline-secondary" title="Quote"       onclick="prefix('> ')"><i class="bi bi-quote"></i></button>
+            <button type="button" class="btn btn-outline-secondary" title="Expandable quote / 可折叠引用" onclick="prefixLines('>! ')"><i class="bi bi-chevron-bar-expand"></i></button>
           </div>
           <div class="btn-group btn-group-sm flex-wrap" role="group">
             <button type="button" class="btn btn-outline-primary" title="Insert image / 插入图片" onclick="document.getElementById('img-input').click()"><i class="bi bi-image"></i></button>
@@ -230,6 +231,28 @@
   .tg-bubble .tg-photo.broken { color: #f08a8a; font-style: italic; }
   .tg-math { display: inline-block; vertical-align: middle; line-height: 0; }
   .tg-math svg { max-width: 100%; vertical-align: middle; }
+  /* Expandable (collapsible) quote — click to toggle */
+  .tg-bubble blockquote.tg-exq { cursor: pointer; position: relative; }
+  .tg-bubble blockquote.tg-exq.collapsed {
+    max-height: 4.2em; overflow: hidden;
+    -webkit-mask-image: linear-gradient(#000 60%, transparent);
+            mask-image: linear-gradient(#000 60%, transparent);
+  }
+  .tg-bubble blockquote.tg-exq::after {
+    content: '▾'; position: absolute; right: .4em; bottom: .1em;
+    font-size: .8em; opacity: .65;
+  }
+  .tg-bubble blockquote.tg-exq:not(.collapsed)::after { content: '▴'; }
+  /* Side-by-side image album (Telegram media group) */
+  .tg-album {
+    display: flex; flex-wrap: wrap; gap: 3px;
+    margin: .35em 0; max-width: 100%;
+  }
+  .tg-album img.tg-photo {
+    margin: 0; flex: 1 1 calc(50% - 3px);
+    max-width: calc(50% - 3px); width: auto;
+    object-fit: cover; border-radius: .4rem;
+  }
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
@@ -247,6 +270,7 @@
   // Per-render scratch for extras protected from marked.
   let _mathStore = [];
   let _imgStore = [];
+  let _exqStore = [];
 
   if (window.marked) {
     marked.setOptions({ gfm: true, breaks: true });
@@ -263,6 +287,14 @@
   function preExtras(src) {
     _mathStore = [];
     _imgStore = [];
+    _exqStore = [];
+    // Expandable quotes: a run of lines each starting with ">! ". Pulled out
+    // before marked so its (markdown) inner can be rendered on its own.
+    src = src.replace(/(?:^>!.*(?:\n|$))+/gm, (block) => {
+      const inner = block.replace(/^>!\s?/gm, '').replace(/\s+$/, '');
+      _exqStore.push(inner);
+      return '\n@@EXQ' + (_exqStore.length - 1) + '@@\n';
+    });
     // image assets first so their alt text isn't mangled
     src = src.replace(/!\[([^\]]*)\]\(asset:([\w-]+)\)/g, (m, alt, id) => {
       _imgStore.push({ id, alt });
@@ -292,7 +324,16 @@
         return '<img class="tg-photo" data-asset="' + escAttr(o.id || '') +
                '" alt="' + escAttr(o.alt || '') + '">';
       })
-      .replace(/@@MATH(\d+)@@/g, '<span class="tg-math" data-mi="$1"></span>');
+      .replace(/@@MATH(\d+)@@/g, '<span class="tg-math" data-mi="$1"></span>')
+      .replace(/<p>\s*@@EXQ(\d+)@@\s*<\/p>/g, (m, i) => exqHtml(+i))
+      .replace(/@@EXQ(\d+)@@/g, (m, i) => exqHtml(+i));
+  }
+  // Render one expandable quote: its inner markdown → HTML inside a tagged
+  // blockquote that the preview can collapse and the sender maps to
+  // <blockquote expandable>.
+  function exqHtml(i) {
+    const inner = (window.marked ? marked.parse(_exqStore[i] || '') : (_exqStore[i] || ''));
+    return '<blockquote class="tg-exq">' + inner + '</blockquote>';
   }
 
   function render(text) {
@@ -329,6 +370,38 @@
       }
       span.textContent = (o.display ? '$$' : '$') + o.tex + (o.display ? '$$' : '$');
     });
+    // Collapse tall expandable quotes (click to toggle).
+    preview.querySelectorAll('blockquote.tg-exq').forEach((bq) => {
+      if (bq.scrollHeight > 80) bq.classList.add('collapsed');
+    });
+    groupAlbums();
+  }
+
+  // Merge consecutive image-only blocks into a side-by-side album (mirrors how
+  // Telegram lays out a media group).
+  function groupAlbums() {
+    const isImgBlock = (el) => el && el.querySelectorAll &&
+      el.querySelectorAll('img.tg-photo').length >= 1 && el.textContent.trim() === '';
+    let i = 0;
+    let blocks = Array.from(preview.children);
+    while (i < blocks.length) {
+      if (!isImgBlock(blocks[i]) || blocks[i].classList.contains('tg-album')) { i++; continue; }
+      let j = i; const imgs = [];
+      while (j < blocks.length && isImgBlock(blocks[j])) {
+        blocks[j].querySelectorAll('img.tg-photo').forEach((im) => imgs.push(im));
+        j++;
+      }
+      if (imgs.length >= 2) {
+        const album = document.createElement('div');
+        album.className = 'tg-album';
+        preview.insertBefore(album, blocks[i]);
+        imgs.forEach((im) => album.appendChild(im));
+        for (let k = i; k < j; k++) blocks[k].remove();
+        blocks = Array.from(preview.children);
+        i = 0; continue;
+      }
+      i = j;
+    }
   }
 
   function sync() {
@@ -347,6 +420,8 @@
     if (e.target.classList && e.target.classList.contains('tg-spoiler')) {
       e.target.classList.toggle('revealed');
     }
+    const exq = e.target.closest && e.target.closest('blockquote.tg-exq');
+    if (exq) exq.classList.toggle('collapsed');
   });
 
   // ── Recipient picker ─────────────────────────────────────────────
@@ -373,6 +448,20 @@
     md.value = md.value.slice(0, lineStart) + p + md.value.slice(lineStart);
     md.focus();
     md.selectionStart = md.selectionEnd = s + p.length;
+    sync();
+  }
+  // Prefix every line touched by the selection (or the caret line).
+  function prefixLines(p) {
+    const s = md.selectionStart, e = md.selectionEnd;
+    const start = md.value.lastIndexOf('\n', s - 1) + 1;
+    let end = md.value.indexOf('\n', e);
+    if (end === -1) end = md.value.length;
+    const block = md.value.slice(start, end);
+    const out = block.split('\n').map((l) => p + l).join('\n');
+    md.value = md.value.slice(0, start) + out + md.value.slice(end);
+    md.focus();
+    md.selectionStart = start;
+    md.selectionEnd = start + out.length;
     sync();
   }
   function insertAtCursor(text) {
@@ -517,6 +606,55 @@
     if (!document.querySelector('#tbl-grid .tbl-cell')) buildTableGrid();
   });
 
+  // ── Markdown → Telegram HTML ─────────────────────────────────────
+  // Used only for text blocks containing an expandable quote, which must go
+  // via legacy sendMessage(parse_mode=HTML). Telegram's HTML supports a small
+  // tag subset; unsupported blocks (headings, tables, lists) degrade to text.
+  function tgEsc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function tgNode(node) {
+    if (node.nodeType === 3) return tgEsc(node.nodeValue);
+    if (node.nodeType !== 1) return '';
+    const tag = node.tagName.toLowerCase();
+    const kids = () => Array.from(node.childNodes).map(tgNode).join('');
+    switch (tag) {
+      case 'strong': case 'b': return '<b>' + kids() + '</b>';
+      case 'em': case 'i': return '<i>' + kids() + '</i>';
+      case 'u': case 'ins': return '<u>' + kids() + '</u>';
+      case 'del': case 's': case 'strike': return '<s>' + kids() + '</s>';
+      case 'a': return '<a href="' + tgEsc(node.getAttribute('href') || '') + '">' + kids() + '</a>';
+      case 'code':
+        if (node.parentElement && node.parentElement.tagName.toLowerCase() === 'pre') return kids();
+        return '<code>' + kids() + '</code>';
+      case 'pre': return '<pre>' + kids() + '</pre>\n';
+      case 'blockquote': {
+        const exp = node.classList.contains('tg-exq') ? ' expandable' : '';
+        return '<blockquote' + exp + '>' + kids().replace(/^\n+|\n+$/g, '') + '</blockquote>\n';
+      }
+      case 'span': case 'tg-spoiler':
+        if (tag === 'tg-spoiler' || node.classList.contains('tg-spoiler'))
+          return '<tg-spoiler>' + kids() + '</tg-spoiler>';
+        return kids();
+      case 'h1': case 'h2': case 'h3': case 'h4': case 'h5': case 'h6':
+        return '<b>' + kids() + '</b>\n';
+      case 'p': return kids() + '\n\n';
+      case 'br': return '\n';
+      case 'hr': return '──────\n';
+      case 'li': return '• ' + kids().replace(/\n+$/, '') + '\n';
+      case 'ul': case 'ol': return kids() + '\n';
+      case 'tr': return Array.from(node.children).map(tgNode).join(' | ') + '\n';
+      case 'img': { const a = node.getAttribute('alt'); return a ? '[' + a + ']' : ''; }
+      default: return kids();
+    }
+  }
+  function mdToTgHtml(src) {
+    const html = postExtras(marked.parse(preExtras(src)));
+    const box = document.createElement('div');
+    box.innerHTML = html;
+    return Array.from(box.childNodes).map(tgNode).join('').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
   // ── Send ─────────────────────────────────────────────────────────
   // Tokenise the document in order into text runs and photo parts
   // (uploaded images + math rasterised to PNG), then POST as multipart.
@@ -541,7 +679,13 @@
         t = t.replace(/^\n+|\n+$/g, '');
         if (!t.trim()) return;
         if (new Blob([t]).size > MAX_BYTES) throw new Error('one text block exceeds 32768 bytes');
-        parts.push({ type: 'text', text: t });
+        // Expandable quotes only render via legacy sendMessage HTML — convert
+        // the whole block and flag it; everything else stays rich markdown.
+        if (/^>!/m.test(t)) {
+          parts.push({ type: 'text', html: mdToTgHtml(t) });
+        } else {
+          parts.push({ type: 'text', text: t });
+        }
       }
 
       while ((m = tokenRe.exec(src))) {
