@@ -22,6 +22,7 @@ import asyncio
 import csv
 import hashlib
 import io
+import json
 import os
 import secrets
 from datetime import date as _date
@@ -607,6 +608,36 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
             "warn_count": warn_count,
             "rss_count": rss_count,
         })
+
+    @app.get("/island", response_class=HTMLResponse)
+    async def island(request: Request, session: Optional[str] = Cookie(None)):
+        """Animal-Crossing-styled dashboard skin (animal-island-ui).
+
+        Self-contained React/Babel page served raw (not via Jinja, whose
+        ``{{ }}`` syntax clashes with JSX ``style={{ }}``).  Real dashboard
+        counts are injected by replacing the ``__PONY_STATS_JSON__`` token.
+        """
+        if not _authed(session):
+            return _redirect_login()
+
+        async with get_session() as s:
+            user_count = (await s.execute(select(func.count()).select_from(User))).scalar_one()
+            group_count = (await s.execute(select(func.count()).select_from(GroupSettings))).scalar_one()
+            active_count = (await s.execute(
+                select(func.count()).select_from(GroupSettings).where(GroupSettings.is_active == True)  # noqa: E712
+            )).scalar_one()
+            bl_count = (await s.execute(select(func.count()).select_from(Blacklist))).scalar_one()
+            rss_count = (await s.execute(select(func.count()).select_from(RssFeed))).scalar_one()
+
+        stats = json.dumps({
+            "users": user_count,
+            "groups": group_count,
+            "active": active_count,
+            "blacklist": bl_count,
+            "rss": rss_count,
+        })
+        html = (TEMPLATES_DIR / "island.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__PONY_STATS_JSON__", stats))
 
     # ------------------------------------------------------------------ #
     # Health checks                                                        #
