@@ -55,11 +55,7 @@ async def help_cmd(update: Update, context) -> None:
         "• Reply to my messages → AI reply\n"
         "• Paste a media URL → auto-download\n\n"
         "<b>Inline mode</b>\n"
-        "@{username} movie / tv / book / music / artist &lt;query&gt;\n\n"
-        "<b>FilmSpot channel</b> (owner, private chat)\n"
-        "/filmspot movie|tv &lt;title&gt; — preview, then confirm\n"
-        "/gossip — freeform note, then confirm\n"
-        "Channel id is set in Web Admin → FilmSpot, not in code."
+        "@{username} movie / tv / book / music / artist &lt;query&gt;"
     )
     bot_username = context.bot.username or "bot"
     await update.effective_message.reply_text(

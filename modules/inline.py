@@ -85,11 +85,13 @@ async def on_inline_query(update: Update, context) -> None:
                 results.append(_result(f"No results for '{rest}'",
                                        f"No {prefix} results found."))
             else:
-                for item in items[:5]:
+                cards = await asyncio.gather(*[
+                    _format_movie(item, prefix, context) for item in items[:5]
+                ])
+                for item, text in zip(items[:5], cards):
                     title  = item.get("title") or item.get("name", "Unknown")
                     year   = (item.get("release_date") or item.get("first_air_date", ""))[:4]
                     desc   = f"{year}" if year else ""
-                    text   = _format_movie(item, prefix)
                     poster = item.get("poster_path")
                     thumb  = f"{_IMG_BASE}{poster}" if poster else ""
                     results.append(_result(title, text, desc, thumb))

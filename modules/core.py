@@ -19,13 +19,13 @@ _COMPONENT = Component(
     id="core",
     name="全局 AI",
     icon="bi-cpu",
-    description="跨模块共享的 AI 配置。DeepSeek 用于游戏名翻译、文章摘要/标题翻译等，优先于 Claude。",
+    description="跨模块共享的 AI 配置。DeepSeek 用于游戏名翻译、文章摘要/标题翻译、影视卖点润色等，优先于 Claude。",
     config_keys=[
         ConfigField(
             key="deepseek_api_key",
             label="DeepSeek API Key",
             kind="secret",
-            help='前往 platform.deepseek.com → API Keys → 创建新密钥。用于全局翻译/摘要，成本低、速度快。',
+            help='前往 platform.deepseek.com → API Keys → 创建新密钥。用于全局翻译/摘要，以及影视搜索的卖点润色。未配置时 /movie 与 /tv 仍可用，卖点改为从标语和评分生成。',
             placeholder="sk-…",
             test_service="deepseek",
             link="https://platform.deepseek.com/api_keys",

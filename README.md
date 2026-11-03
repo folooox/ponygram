@@ -85,7 +85,7 @@ sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX-X
 a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
 ```
 
-FilmSpot channel posts use this same key. The destination channel is **not** an environment variable: set `filmspot_channel_id` in **Web Admin → 组件 → FilmSpot**. Leave it empty to preview only.
+`/movie`, `/tv`, and inline `movie` / `tv` share one FilmSpot-style card (片名, 原名, 类型, 主创, 档期, 梗概, 卖点, 标签) with the poster as the photo. Genres and credits come from the TMDB details request. If **Web Admin → 组件 → 全局 AI** has `deepseek_api_key`, DeepSeek rewrites the 卖点; with no key the bot uses the tagline, rating, and popularity and the command still succeeds.
 
 ---
 
@@ -195,36 +195,12 @@ Type in any chat:
 
 | Prefix | Requires | Description |
 |---|---|---|
-| `movie <title>` | TMDB Key | Movie search |
-| `tv <title>` | TMDB Key | TV show search |
+| `movie <title>` | TMDB Key | Movie card (same FilmSpot template as `/movie`) |
+| `tv <title>` | TMDB Key | TV card (same FilmSpot template as `/tv`) |
 | `book <query>` | — | Google Books |
 | `music <artist - track>` | Last.fm Key | Track search |
 | `artist <name>` | Last.fm Key | Artist info + top tracks |
 | `game <title>` | RAWG Key | PS4/PS5 game search with cover, rating, Metacritic |
-
-### 📣 FilmSpot channel posts (owner, private chat)
-
-`/movie` and `/tv` stay a short lookup. Channel copy is a separate, owner-confirmed path. Nothing is posted until you press **发送到频道**.
-
-| Command | Description |
-|---|---|
-| `/filmspot <title>` | Movie search → FilmSpot preview |
-| `/filmspot tv <title>` | TV search → FilmSpot preview |
-| `/channel_post movie <title>` | Same flow; use `tv` instead of `movie` for series |
-| `/gossip`, `/channel_text` | Freeform note. Next message is the body; a photo is optional |
-
-On a `/movie` or `/tv` card the owner also gets **生成频道稿**, which opens the same preview (sent to private chat if the lookup happened in a group).
-
-The preview is the channel template: 片名, 原名, 类型, 主创, 档期, 梗概, 卖点, 标签, plus the poster. **改卖点** replaces the bullets. **取消** drops the draft.
-
-Configure it in **Web Admin → 组件 → FilmSpot**:
-
-| Key | Default | Effect |
-|---|---|---|
-| `filmspot_channel_id` | empty | Numeric channel id or `@username`. The bot must be an admin there. Empty: preview works; **发送到频道** tells you to set this and does not post. |
-| `filmspot_enabled` | on until you save it off | Off: preview still works, sending does not. |
-
-Do not put the channel id in code or `.env`.
 
 ---
 
@@ -293,8 +269,7 @@ ponygram/
 │   ├── antispam.py         # Rate-limit + anti-invite-link filter
 │   ├── userinfo.py         # /id, /whois
 │   ├── rss.py              # RSS subscriptions (background scheduler)
-│   ├── movie.py            # TMDB movie/TV (short lookup)
-│   ├── filmspot.py         # FilmSpot channel drafts (owner confirm)
+│   ├── movie.py            # TMDB movie/TV (FilmSpot card)
 │   ├── book.py             # Google Books
 │   ├── music.py            # Last.fm
 │   ├── media.py            # yt-dlp / ParseHub media download

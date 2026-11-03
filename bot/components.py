@@ -48,19 +48,6 @@ class ConfigField:
     link_label: str = ""              # 链接显示文字
 
 
-_BOOL_ON = {"1", "true", "on", "yes"}
-
-
-def bool_config_checked(stored: Optional[str], default: str = "") -> bool:
-    """Whether a bool config field should render as on.
-
-    A missing or blank value uses ``default`` (so the switch can show the
-    intended state before the first save). An explicit ``0`` / ``false`` stays off.
-    """
-    raw = default if stored is None or str(stored).strip() == "" else stored
-    return str(raw).strip().lower() in _BOOL_ON
-
-
 # A dry-run test: async (sample_input: str) -> dict. MUST NOT send anything to
 # Telegram or mutate state — it only returns a result for display in the web UI.
 TestFn = Callable[[str], Awaitable[dict]]
