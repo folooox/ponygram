@@ -43,7 +43,7 @@ ask()  { echo -en "${CYAN}  ?${NC}  $* "; }
 REPO_URL="https://github.com/folooox/ponygram"
 REPO_RAW="https://raw.githubusercontent.com/folooox/ponygram/main"
 INSTALL_DIR="${PONYGRAM_DIR:-$HOME/ponygram}"
-PYTHON_MIN_MINOR=10   # require 3.10+
+PYTHON_MIN_MINOR=12   # require 3.12+
 
 # ── Banner ───────────────────────────────────────────────────
 clear 2>/dev/null || true
@@ -299,7 +299,7 @@ if [[ "$INSTALL_MODE" == "venv" ]]; then
     ok "Python packages installed"
 
     # Verify key imports
-    for pkg in telegram anthropic fastapi yt_dlp feedparser; do
+    for pkg in telegram anthropic fastapi parsehub feedparser; do
         if "$PYTHON" -c "import $pkg" 2>/dev/null; then
             ok "  $pkg"
         else
