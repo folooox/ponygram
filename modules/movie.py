@@ -18,7 +18,13 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from bot.cache import movie_cache
-from bot.components import Component, ConfigField, register_component, require_module
+from bot.components import (
+    Component,
+    ConfigField,
+    is_module_enabled,
+    register_component,
+    require_module,
+)
 from bot.database import get_bot_config
 from bot.logger import get_logger
 from bot.router import registry
@@ -115,6 +121,31 @@ def _movie_select_keyboard(items: list, cache_key: str, media_type: str) -> Inli
     return InlineKeyboardMarkup(rows)
 
 
+async def _owner_draft_markup(update: Update, context, media_type: str, item: dict):
+    """Extra button on the short lookup card. Does not change the blurb itself.
+
+    Only the bot owner sees it, and only while the FilmSpot module is enabled.
+    The callback is handled by ``modules.filmspot``.
+    """
+    user = update.effective_user
+    cfg = context.bot_data.get("config") if context else None
+    raw_id = item.get("id") if item else None
+    if not user or not cfg or raw_id is None or not cfg.is_owner(user.id):
+        return None
+    try:
+        tmdb_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    if not await is_module_enabled("filmspot"):
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "生成频道稿",
+            callback_data=f"fs_make:{media_type}:{tmdb_id}",
+        )
+    ]])
+
+
 async def on_movie_select(update: Update, context) -> None:
     q = update.callback_query
     assert q
@@ -134,6 +165,7 @@ async def on_movie_select(update: Update, context) -> None:
     text = _format_movie(item, media_type)
     poster = item.get("poster_path")
     chat_id = q.message.chat_id if q.message else None
+    markup = await _owner_draft_markup(update, context, media_type, item)
 
     try:
         await q.message.delete()
@@ -145,6 +177,7 @@ async def on_movie_select(update: Update, context) -> None:
             await context.bot.send_photo(
                 chat_id, f"{_IMG_BASE}{poster}",
                 caption=text[:1024], parse_mode=ParseMode.HTML,
+                reply_markup=markup,
             )
             return
         except Exception:
@@ -152,6 +185,7 @@ async def on_movie_select(update: Update, context) -> None:
     if chat_id:
         await context.bot.send_message(
             chat_id, text, parse_mode=ParseMode.HTML, disable_web_page_preview=False,
+            reply_markup=markup,
         )
 
 
@@ -181,14 +215,20 @@ async def _cmd_search(update: Update, context, media_type: str) -> None:
         item = results[0]
         text = _format_movie(item, media_type)
         poster = item.get("poster_path")
+        markup = await _owner_draft_markup(update, context, media_type, item)
         if poster:
             try:
-                await msg.reply_photo(f"{_IMG_BASE}{poster}", caption=text[:1024],
-                                      parse_mode=ParseMode.HTML)
+                await msg.reply_photo(
+                    f"{_IMG_BASE}{poster}", caption=text[:1024],
+                    parse_mode=ParseMode.HTML, reply_markup=markup,
+                )
                 return
             except Exception:
                 pass
-        await msg.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=False)
+        await msg.reply_text(
+            text, parse_mode=ParseMode.HTML, disable_web_page_preview=False,
+            reply_markup=markup,
+        )
     else:
         emoji = "🎬" if media_type == "movie" else "📺"
         lines = [f"{emoji} 搜到 <b>{len(results)}</b> 个结果，请选择：\n"]

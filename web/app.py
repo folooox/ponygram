@@ -34,7 +34,12 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from bot import render
-from bot.components import all_components, get_component, is_module_enabled
+from bot.components import (
+    all_components,
+    bool_config_checked,
+    get_component,
+    is_module_enabled,
+)
 from bot.database import (
     delete_template,
     get_all_templates,
@@ -1590,7 +1595,7 @@ def create_web_app(secret: str, bot=None) -> FastAPI:
                 "set":          bool(configs.get(f.key)),
                 # Only echo plain values back into the form; never secrets/cookies.
                 "value":        configs.get(f.key, "") if f.kind in ("text", "int") else "",
-                "checked":      str(configs.get(f.key, "")).lower() in ("1", "true", "on", "yes"),
+                "checked":      bool_config_checked(configs.get(f.key), f.default),
             }
             for f in comp.config_fields
         ]
