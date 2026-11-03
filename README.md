@@ -85,6 +85,8 @@ sk-ant-api03-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX-X
 a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4
 ```
 
+`/movie`, `/tv`, and inline `movie` / `tv` share one FilmSpot-style card (片名, 原名, 类型, 主创, 档期, 梗概, 卖点, 标签) with the poster as the photo. Genres and credits come from the TMDB details request. If **Web Admin → 组件 → 全局 AI** has `deepseek_api_key`, DeepSeek rewrites the 卖点; with no key the bot uses the tagline, rating, and popularity and the command still succeeds.
+
 ---
 
 ### 🎵 Last.fm API Key
@@ -193,8 +195,8 @@ Type in any chat:
 
 | Prefix | Requires | Description |
 |---|---|---|
-| `movie <title>` | TMDB Key | Movie search |
-| `tv <title>` | TMDB Key | TV show search |
+| `movie <title>` | TMDB Key | Movie card (same FilmSpot template as `/movie`) |
+| `tv <title>` | TMDB Key | TV card (same FilmSpot template as `/tv`) |
 | `book <query>` | — | Google Books |
 | `music <artist - track>` | Last.fm Key | Track search |
 | `artist <name>` | Last.fm Key | Artist info + top tracks |
@@ -267,7 +269,7 @@ ponygram/
 │   ├── antispam.py         # Rate-limit + anti-invite-link filter
 │   ├── userinfo.py         # /id, /whois
 │   ├── rss.py              # RSS subscriptions (background scheduler)
-│   ├── movie.py            # TMDB movie/TV
+│   ├── movie.py            # TMDB movie/TV (FilmSpot card)
 │   ├── book.py             # Google Books
 │   ├── music.py            # Last.fm
 │   ├── media.py            # yt-dlp / ParseHub media download
