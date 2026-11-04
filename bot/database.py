@@ -335,6 +335,9 @@ async def init_db(database_url: str) -> None:
         await conn.run_sync(Base.metadata.create_all)
         await _migrate(conn)
     await _seed_default_columns()
+    # Notify chat id lives in bot_config and is read on each send (no restart).
+    from services.notify import ensure_notify_config
+    await ensure_notify_config()
     log.info("Database initialised", url=database_url)
 
 

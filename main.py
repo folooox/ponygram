@@ -21,6 +21,7 @@ from telegram.ext import Application, ApplicationBuilder
 
 from bot.config import load_config
 from bot.database import init_db, get_bot_config, set_bot_config
+from services.notify import bind as bind_notify_bot
 from bot.error_handler import error_handler
 from bot.logger import get_logger, setup_logging
 from bot.plugin_loader import PluginLoader
@@ -66,6 +67,7 @@ async def main() -> None:
     # Make config and runtime settings accessible to handlers via bot_data
     app.bot_data["config"] = cfg
     app.bot_data["rss_interval"] = int(os.environ.get("RSS_INTERVAL", "15"))
+    bind_notify_bot(app.bot)
 
     # Register global error handler
     app.add_error_handler(error_handler)

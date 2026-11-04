@@ -15,7 +15,7 @@ from sqlalchemy import select, func, delete, or_, cast, String
 from bot.database import (User, RssFeed, RssSent, get_session, get_bot_config, set_bot_config,
                           get_all_rss_feeds, get_ai_usage_log, get_ai_usage_stats)
 from bot.ai import DEFAULT_PROMPT, polish_text
-from services import catalog
+from services import catalog, notify
 from modules.rss import normalize_target, resolve_target, _fetch_feed
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / 'templates'))
@@ -156,12 +156,26 @@ def create_web_app(secret, bot=None):
                     enabled={k: await catalog.enabled(k) for k in catalog.KINDS}, results=results, cards=cards, error=error,
                     selected_kind=kind, query=query)
 
-    @app.get('/settings')
-    async def settings(request: Request, saved: str = ''):
+    async def render_settings(request, saved='', notify_status='', notify_error='', form_chat_id=None, form_label=None):
         values = {k: await get_bot_config(k) or '' for k in ['itunes_country', 'ai_enabled', 'ai_model', 'ai_prompt']}
+        if form_chat_id is None:
+            chat_id = await get_bot_config(notify.NOTIFY_CHAT_ID_KEY) or ''
+        else:
+            chat_id = form_chat_id
+        if form_label is None:
+            label = await get_bot_config(notify.NOTIFY_LABEL_KEY) or ''
+        else:
+            label = form_label
+        if notify_status not in ('', 'saved', 'sent'):
+            notify_status = ''
         return page(request, 'settings', values=values, prompt=DEFAULT_PROMPT, saved=saved,
                     tmdb_configured=bool(await get_bot_config('tmdb_api_key')),
-                    ai_configured=bool(await get_bot_config('deepseek_api_key')))
+                    ai_configured=bool(await get_bot_config('deepseek_api_key')),
+                    notify_chat_id=chat_id, notify_label=label, notify=notify_status, notify_error=notify_error)
+
+    @app.get('/settings')
+    async def settings(request: Request, saved: str = '', notify: str = ''):
+        return await render_settings(request, saved=saved, notify_status=notify)
 
     @app.post('/settings')
     async def save_settings(request: Request):
@@ -180,6 +194,28 @@ def create_web_app(secret, bot=None):
         await set_bot_config('ai_prompt', str(form.get('ai_prompt') or DEFAULT_PROMPT)[:4000])
         await catalog.cache.clear()
         return redirect('/settings?saved=1')
+
+    @app.post('/settings/notify')
+    async def save_notify(request: Request):
+        form = await request.form()
+        raw_chat = str(form.get('notify_chat_id') or '')
+        label = notify.normalize_label(form.get('notify_label'))
+        try:
+            chat_id = notify.parse_chat_id(raw_chat)
+        except ValueError as exc:
+            return await render_settings(request, notify_error=str(exc), form_chat_id=raw_chat.strip(), form_label=label)
+        await set_bot_config(notify.NOTIFY_CHAT_ID_KEY, str(chat_id))
+        await set_bot_config(notify.NOTIFY_LABEL_KEY, label)
+        return redirect('/settings?notify=saved')
+
+    @app.post('/settings/notify/test')
+    async def test_notify(request: Request):
+        # Same session cookie and origin check as the other admin writes.
+        try:
+            await notify.send_text(notify.TEST_PING, bot=bot)
+        except notify.NotifyError as exc:
+            return await render_settings(request, notify_error=str(exc))
+        return redirect('/settings?notify=sent')
 
     @app.post('/settings/test-ai')
     async def test_ai(request: Request):

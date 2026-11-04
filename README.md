@@ -12,7 +12,9 @@ Public Telegram catalog for movies, TV, songs and books. Private chat and inline
 
 ## Admin
 
-`/`: overview; `/users`: searchable user list with private/inline entry records and pagination; `/queries`: category switches and shared-service preview; `/rss`: feed/destination/AI/pause/edit/delete; `/settings`: TMDB, storefront and global AI; `/ai-stats`: usage.
+`/`: overview; `/users`: searchable user list with private/inline entry records and pagination; `/queries`: category switches and shared-service preview; `/rss`: feed/destination/AI/pause/edit/delete; `/settings`: TMDB, storefront, global AI, and the outbound notify chat; `/ai-stats`: usage.
+
+Outbound alerts (settlement and ops) use `notify_chat_id` in the database, edited on Settings. Each send reads the current value, so saving does not require a restart. Startup inserts that row when it is missing. `services.notify.send_text` delivers through the running bot and raises a clear error when the chat id is missing or the bot is not connected. Settings → 测试推送 sends a one-line ping to the saved chat. The id is not an environment variable.
 
 Configure `BOT_TOKEN`, `OWNER_ID`, `WEB_ENABLED=true`, `WEB_SECRET`, `WEB_PORT` in `.env`. Existing SQLite data and API keys are retained. RSS destination and AI flag are additive database migrations. Obsolete tables remain for recovery but have no active routes/handlers.
 
