@@ -11,6 +11,10 @@ import aiohttp
 from bot.cache import TTLCache
 from bot.database import get_bot_config
 from bot.ai import polish_text
+from services.filmspot import (
+    apply_language_gaps, card_text, choose_selling_points, merge_media, needs_english,
+    parts_from_detail, polish_selling, render_filmspot, trim_to_limit, utf16_len,
+)
 
 KINDS = {'movie': '电影', 'tv': '剧集', 'music': '音乐', 'book': '书籍'}
 ICONS = {'movie': '🎬', 'tv': '📺', 'music': '🎵', 'book': '📚'}
@@ -34,6 +38,7 @@ class Card:
     facts: list[tuple[str, str]] = field(default_factory=list)
     extra_links: list[tuple[str, str]] = field(default_factory=list)
     raw: dict = field(default_factory=dict, repr=False)
+    film: dict = field(default_factory=dict, repr=False)
 
 
 def safe_url(value: str) -> str:
@@ -106,6 +111,17 @@ def _open_card(item):
                 facts=[('作者', '、'.join(item.get('author_name', []))), ('首次出版年份', str(item.get('first_publish_year') or ''))], raw=item)
 
 
+def _tmdb_seed(card: Card) -> dict:
+    seed = {'overview': card.description or ''}
+    if card.kind == 'tv':
+        seed['name'] = card.title or ''
+        seed['original_name'] = card.original or ''
+    else:
+        seed['title'] = card.title or ''
+        seed['original_title'] = card.original or ''
+    return seed
+
+
 async def enabled(kind):
     # movie and tv share their provider, but can be enabled independently.
     return await get_bot_config('query_enabled_' + kind) != '0'
@@ -170,36 +186,46 @@ async def _detail(card: Card, *, ai=True) -> Card:
         d = result.raw
         if card.kind in ('movie', 'tv'):
             api_key = await get_bot_config('tmdb_api_key')
-            info = await request(f'https://api.themoviedb.org/3/{card.kind}/{card.id}', {'api_key': api_key or '', 'language': 'zh-CN', 'append_to_response': 'credits'})
-            d = info or d
-            result.description = d.get('overview') or result.description
-            # Preserve native Chinese verbatim, even if the provider wrote a short synopsis.
-            # Only fetch another language when the localized description is missing.
-            if not result.description:
-                original = await request(f'https://api.themoviedb.org/3/{card.kind}/{card.id}',
-                                         {'api_key': api_key or '', 'language': 'en-US'})
-                overview = (original or {}).get('overview') or ''
-                if overview:
-                    result.description = overview
+            extra = 'credits,aggregate_credits' if card.kind == 'tv' else 'credits'
+            zh = await request(f'https://api.themoviedb.org/3/{card.kind}/{card.id}',
+                               {'api_key': api_key or '', 'language': 'zh-CN', 'append_to_response': extra})
+            en = None
+            if isinstance(zh, dict) and needs_english(zh, card.kind):
+                en = await request(f'https://api.themoviedb.org/3/{card.kind}/{card.id}',
+                                   {'api_key': api_key or '', 'language': 'en-US', 'append_to_response': extra})
+            search_raw = d if isinstance(d, dict) else {}
+            filled = apply_language_gaps(zh, en, card.kind) if isinstance(zh, dict) else dict(search_raw)
+            d = merge_media(merge_media(_tmdb_seed(card), search_raw), filled)
+            result.description = (d.get('overview') or '').strip() or result.description
+            result.title = (d.get('title') or d.get('name') or result.title or '未命名').strip() or result.title
+            result.original = (d.get('original_title') or d.get('original_name') or '').strip()
+            poster = d.get('poster_path') or ''
+            if isinstance(poster, str) and poster.startswith('/'):
+                result.image = 'https://image.tmdb.org/t/p/w500' + poster
+            credits = d.get('credits') or {}
             result.facts = [('上映日期' if card.kind == 'movie' else '首播日期', d.get('release_date') or d.get('first_air_date') or ''),
                             ('评分', f"{d['vote_average']:.1f}/10 · {d.get('vote_count', 0)} 人" if d.get('vote_average') else ''),
-                            ('类型', '、'.join(x['name'] for x in d.get('genres', [])))]
-            countries = '、'.join(x.get('name', '') for x in d.get('production_countries', []))
-            language = '、'.join(x.get('english_name') or x.get('name') or '' for x in d.get('spoken_languages', []))
-            cast = '、'.join(x.get('name', '') for x in d.get('credits', {}).get('cast', [])[:6])
+                            ('类型', '、'.join(x['name'] for x in (d.get('genres') or [])))]
+            countries = '、'.join(x.get('name', '') for x in (d.get('production_countries') or []))
+            language = '、'.join(x.get('english_name') or x.get('name') or '' for x in (d.get('spoken_languages') or []))
+            cast_rows = credits.get('cast') or []
+            if not cast_rows and card.kind == 'tv':
+                cast_rows = (d.get('aggregate_credits') or {}).get('cast') or []
+            cast = '、'.join(x.get('name', '') for x in cast_rows[:6])
             result.facts += [('地区', countries), ('语言', language)]
             if card.kind == 'movie':
-                directors = '、'.join(x.get('name', '') for x in d.get('credits', {}).get('crew', []) if x.get('job') == 'Director')
+                directors = '、'.join(x.get('name', '') for x in (credits.get('crew') or []) if x.get('job') in ('Director', '导演'))
                 result.facts += [('时长', str(d['runtime']) + ' 分钟' if d.get('runtime') else ''), ('导演', directors)]
             else:
-                creators = '、'.join(x.get('name', '') for x in d.get('created_by', []))
-                runtime = d.get('episode_run_time', [])
+                creators = '、'.join(x.get('name', '') for x in (d.get('created_by') or []))
+                runtime = d.get('episode_run_time') or []
                 status = {'Ended': '已完结', 'Returning Series': '连载中', 'Canceled': '已取消',
                           'In Production': '制作中', 'Planned': '筹备中', 'Pilot': '试播'}.get(d.get('status'), d.get('status') or '')
                 result.facts += [('季数 / 集数', f"{d.get('number_of_seasons', '—')} 季 / {d.get('number_of_episodes', '—')} 集" if d.get('number_of_seasons') else ''),
                                  ('播出状态', status), ('单集时长', ' / '.join(str(x) for x in runtime) + ' 分钟' if runtime else ''),
-                                 ('主创', creators), ('播出平台', '、'.join(x.get('name', '') for x in d.get('networks', [])))]
+                                 ('主创', creators), ('播出平台', '、'.join(x.get('name', '') for x in (d.get('networks') or [])))]
             result.facts.append(('主演', cast))
+            result.film = parts_from_detail(d, card.kind)
         elif card.kind == 'music':
             duration = d.get('trackTimeMillis', 0) // 1000
             result.facts = [('歌手', d.get('artistName', '')), ('专辑', d.get('collectionName', '')),
@@ -250,6 +276,9 @@ async def _detail(card: Card, *, ai=True) -> Card:
 
 
 def render_card(card: Card) -> str:
+    if card.kind in ('movie', 'tv') and card.film:
+        caption, followup = render_filmspot(card.film)
+        return card_text(caption, followup)
     esc = lambda value: html.escape(plain(value))
     lines = [f'{ICONS[card.kind]} <b>{esc(card.title[:160])}</b>']
     if card.original and card.original != card.title:
@@ -277,12 +306,38 @@ def render_card(card: Card) -> str:
     return header + ('\n\n' + html.escape(description) if description else '') + footer
 
 
+def film_caption(card: Card):
+    """Photo caption and optional follow-up. None for music and books."""
+    if card.kind not in ('movie', 'tv') or not card.film:
+        return None
+    caption, followup = render_filmspot(card.film)
+    if followup and utf16_len(followup) > 4000:
+        followup = trim_to_limit(followup, 4000)
+    return caption, followup
+
+
+async def _present(result: Card, *, ai: bool) -> Card:
+    """Attach polished FilmSpot selling points without touching music or books."""
+    if result.kind not in ('movie', 'tv'):
+        return result
+    if result.film:
+        film = dict(result.film)
+    else:
+        raw = result.raw if isinstance(result.raw, dict) else {}
+        film = parts_from_detail(merge_media(_tmdb_seed(result), raw), result.kind)
+    if result.description:
+        film['overview'] = result.description
+    if ai:
+        film['selling'] = choose_selling_points(await polish_selling(film), list(film.get('selling') or []))
+    return replace(result, film=film)
+
+
 async def detail(card: Card, *, ai=True) -> Card:
     """Bounded enrichment shared by every entry point; search facts survive timeouts."""
     try:
-        return await asyncio.wait_for(_detail(card, ai=ai), timeout=10)
+        result = await asyncio.wait_for(_detail(card, ai=ai), timeout=10)
     except TimeoutError:
-        fallback = replace(card, facts=list(card.facts), extra_links=list(card.extra_links))
-        if fallback.kind == 'book' and not any(label == 'Goodreads 搜索' for label, _ in fallback.extra_links):
-            fallback.extra_links.append(('Goodreads 搜索', 'https://www.goodreads.com/search?' + urlencode({'q': fallback.title})))
-        return fallback
+        result = replace(card, facts=list(card.facts), extra_links=list(card.extra_links), raw=dict(card.raw))
+        if result.kind == 'book' and not any(label == 'Goodreads 搜索' for label, _ in result.extra_links):
+            result.extra_links.append(('Goodreads 搜索', 'https://www.goodreads.com/search?' + urlencode({'q': result.title})))
+    return await _present(result, ai=ai)

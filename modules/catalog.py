@@ -21,8 +21,23 @@ def card_keyboard(card):
 
 
 async def send_card(message, card):
-    text = catalog.render_card(card)
     keyboard = card_keyboard(card)
+    split = catalog.film_caption(card)
+    if split:
+        caption, followup = split
+        if card.image:
+            try:
+                await message.reply_photo(card.image, caption=caption, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+                if followup:
+                    await message.reply_text(followup, parse_mode=ParseMode.HTML,
+                                             link_preview_options=LinkPreviewOptions(is_disabled=True))
+                return
+            except Exception:
+                pass  # bad/missing poster must not prevent the actual detail card
+        await message.reply_text(catalog.render_card(card), parse_mode=ParseMode.HTML, reply_markup=keyboard,
+                                 link_preview_options=LinkPreviewOptions(is_disabled=True))
+        return
+    text = catalog.render_card(card)
     if card.image:
         try:
             await message.reply_photo(card.image, caption=text if len(text) <= 1000 else None,
@@ -48,6 +63,21 @@ async def command(update, context):
         results = await asyncio.wait_for(catalog.search(kind, ' '.join(context.args)), timeout=12)
         if not results:
             await status.edit_text('没有找到匹配结果，请换一个关键词。')
+            return
+        if kind in ('movie', 'tv') and len(results) == 1:
+            if not await catalog.enabled(kind):
+                await status.edit_text('该查询功能暂时停用。')
+                return
+            try:
+                card = await asyncio.wait_for(catalog.detail(results[0]), timeout=20)
+            except (catalog.CatalogError, TimeoutError):
+                await status.edit_text('加载失败，请稍后重试。')
+                return
+            try:
+                await status.delete()
+            except Exception:
+                pass
+            await send_card(msg, card)
             return
         token = secrets.token_hex(8)
         await selections.set(token, (update.effective_user.id, results))
@@ -80,7 +110,7 @@ async def selected(update, context):
         if not await catalog.enabled(card.kind):
             await q.message.reply_text('该查询功能暂时停用。')
             return
-        card = await asyncio.wait_for(catalog.detail(card), timeout=16)
+        card = await asyncio.wait_for(catalog.detail(card), timeout=20)
         await send_card(q.message, card)
     except (ValueError, TimeoutError, catalog.CatalogError):
         if q.message:
@@ -103,7 +133,7 @@ async def inline(update, context):
     kind, word = parts[0].lower(), parts[1]
     try:
         results = await asyncio.wait_for(catalog.search(kind, word), timeout=12)
-        details = await asyncio.wait_for(asyncio.gather(*[catalog.detail(c) for c in results]), timeout=16)
+        details = await asyncio.wait_for(asyncio.gather(*[catalog.detail(c) for c in results]), timeout=20)
         items = []
         for card in details:
             preview = LinkPreviewOptions(url=card.image, prefer_large_media=True, show_above_text=True) if card.image else LinkPreviewOptions(is_disabled=True)

@@ -148,7 +148,7 @@ def create_web_app(secret, bot=None):
         try:
             results = await asyncio.wait_for(catalog.search(kind, query), timeout=12)
             if results:
-                c = await asyncio.wait_for(catalog.detail(results[0]), timeout=16)
+                c = await asyncio.wait_for(catalog.detail(results[0]), timeout=20)
                 cards = [{'title': c.title, 'image': c.image, 'html': catalog.render_card(c), 'url': c.url}]
         except (catalog.CatalogError, TimeoutError) as e:
             error = str(e) or '查询超时'
