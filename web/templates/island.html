@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ponygram 控制台 · Animal Island</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+:root {
+  --primary: #19c8b9; --primary-hover: #3dd4c6; --primary-active: #11a89b; --primary-bg: #e6f9f6;
+  --text: #794f27; --text-body: #725d42; --text-secondary: #9f927d; --text-muted: #8a7b66; --text-disabled: #c4b89e;
+  --bg: #f8f8f0; --bg-content: rgb(247, 243, 223); --bg-disabled: #f0ece2;
+  --border: #c4b89e; --border-hover: #a89878; --border-strong: #9f927d;
+  --success: #6fba2c; --success-active: #5a9e1e; --warning: #f5c31c; --warning-active: #dba90e; --error: #e05a5a; --error-active: #c94444;
+  --focus-yellow: #ffcc00; --focus-yellow-d: #e0b800; --focus-yellow-radio: #f5c31c;
+  --shadow-btn: #bdaea0; --shadow-input: #d4c9b4; --shadow-switch: #5a9e1e;
+  --r-sm: 12px; --r-base: 18px; --r-lg: 24px; --r-pill: 50px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1); --d-fast: 0.15s; --d-base: 0.25s; --d-slow: 0.35s;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: Nunito, 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+  font-weight: 500; letter-spacing: 0.01em; color: var(--text-body); background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ───── Layout ───── */
+.app-shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 232px; position: fixed; top: 0; left: 0; bottom: 0; z-index: 50;
+  background: linear-gradient(180deg, #eef7f3 0%, #e6f3ee 100%);
+  border-right: 2px solid #cfe6dd; display: flex; flex-direction: column; padding: 18px 14px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 900; font-size: 21px; color: var(--text); padding: 6px 8px 16px; letter-spacing: 0.02em; }
+.brand .pony { font-size: 26px; }
+.nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.nav-link {
+  display: flex; align-items: center; gap: 11px; padding: 10px 14px; border-radius: var(--r-base);
+  color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; text-decoration: none;
+  transition: all var(--d-base) var(--ease); letter-spacing: 0.01em;
+}
+.nav-link .ico { font-size: 17px; width: 20px; text-align: center; }
+.nav-link:hover { background: var(--primary-bg); transform: translateX(2px); }
+.nav-link.active { background: var(--primary); color: #fff; box-shadow: 0 4px 0 0 #11a89b; }
+.nav-foot { border-top: 2px dashed #cfe6dd; padding-top: 10px; margin-top: 6px; }
+.nav-link.logout { color: var(--text-muted); }
+.nav-link.logout:hover { background: #fbe3e3; color: var(--error-active); }
+
+.main { margin-left: 232px; flex: 1; padding: 30px 38px 48px; max-width: 1280px; }
+.head-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 30px; }
+.head-right { display: flex; align-items: flex-end; gap: 22px; }
+.grid-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 18px; margin-bottom: 26px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1.7fr; gap: 18px; margin-bottom: 26px; }
+@media (max-width: 880px) { .sidebar { display: none; } .main { margin-left: 0; padding: 20px; } .grid-2 { grid-template-columns: 1fr; } }
+.stat-label { font-size: 13px; font-weight: 700; letter-spacing: 0.02em; opacity: 0.85; display: flex; align-items: center; gap: 7px; }
+.stat-num { font-size: 40px; font-weight: 900; line-height: 1.1; margin-top: 4px; letter-spacing: 0.02em; }
+.stat-sub { font-size: 12px; font-weight: 700; margin-top: 6px; opacity: 0.9; }
+.panel-h { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.panel-title { font-size: 16px; font-weight: 800; color: var(--text); letter-spacing: 0.02em; }
+
+/* ───── Button ───── */
+.ai-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; cursor: pointer;
+  font-family: inherit; font-weight: 600; letter-spacing: 0.02em; line-height: 1; border: 2px solid transparent;
+  transition: all var(--d-fast) var(--ease); user-select: none; white-space: nowrap;
+}
+.ai-btn:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.ai-btn-small { height: 32px; padding: 0 16px; font-size: 12px; border-radius: 16px; }
+.ai-btn-middle { height: 45px; padding: 0 20px; font-size: 14px; border-radius: 50px; }
+.ai-btn-large { height: 48px; padding: 0 32px; font-size: 16px; border-radius: 24px; }
+.ai-btn-block { display: flex; width: 100%; }
+.ai-btn-primary { color: #794f27; background: #f8f8f0; border-color: #f8f8f0; box-shadow: 0 5px 0 0 #bdaea0; }
+.ai-btn-primary:hover { box-shadow: 0 6px 0 0 #bdaea0; transform: translateY(-1px); }
+.ai-btn-primary:active { box-shadow: 0 1px 0 0 #bdaea0; transform: translateY(2px); }
+.ai-btn-danger { color: #fff; border-color: #e05a5a; box-shadow: 0 5px 0 0 #c94444; background: #e05a5a; }
+.ai-btn-danger:hover { box-shadow: 0 6px 0 0 #c94444; transform: translateY(-1px); }
+.ai-btn-danger:active { box-shadow: 0 1px 0 0 #c94444; transform: translateY(2px); }
+.ai-btn-confirm { color: #725d42; background: #ffcc00; border-color: #ffcc00; box-shadow: 0 5px 0 0 #e0b800; }
+.ai-btn-confirm:hover { box-shadow: 0 6px 0 0 #e0b800; transform: translateY(-1px); }
+.ai-btn-confirm:active { box-shadow: 0 1px 0 0 #e0b800; transform: translateY(2px); }
+.ai-btn-default, .ai-btn-dashed { background: #f8f8f0; border: 2px solid #9f927d; color: var(--text-body); box-shadow: 0 2px 4px 0 rgba(61,52,40,0.06); }
+.ai-btn-dashed { border-style: dashed; }
+.ai-btn-default:hover, .ai-btn-dashed:hover { color: var(--primary); border-color: var(--primary); box-shadow: 0 3px 10px 0 rgba(61,52,40,0.10); transform: translateY(-1px); }
+.ai-btn-default:active, .ai-btn-dashed:active { color: var(--primary-active); border-color: var(--primary-active); transform: translateY(0); box-shadow: 0 2px 4px 0 rgba(61,52,40,0.06); }
+.ai-btn-text, .ai-btn-link { background: transparent; border-color: transparent; color: var(--text-body); box-shadow: none; }
+.ai-btn-text:hover, .ai-btn-link:hover { color: var(--primary); }
+.ai-btn[disabled] { opacity: 0.5; cursor: not-allowed; box-shadow: none !important; transform: none !important; }
+.ai-btn-loading { color: #fff !important; border: 4px solid #4de2da !important; box-shadow: none !important;
+  background-color: #0ec4b6;
+  background-image: repeating-linear-gradient(-45deg, #0ec4b6 0 10px, #01b0a7 10px 20px);
+  background-size: 28.28px 28.28px; animation: btn-loading 1s linear infinite; }
+@keyframes btn-loading { to { background-position: -28.28px 0; } }
+
+/* ───── Card ───── */
+.ai-card { padding: 18px 24px; border-radius: 20px; color: var(--text-body); font-weight: 500;
+  transition: transform var(--d-slow) ease; background: var(--bg-content); }
+.ai-card.hoverable { cursor: pointer; }
+.ai-card.hoverable:hover { transform: translateY(-2px); }
+.ai-card-dashed { background: rgb(250,248,242); border: 2px dashed #e8dcc8; }
+
+/* ───── Title ribbon ───── */
+.ai-ribbon { position: relative; display: inline-flex; align-items: center; justify-content: center;
+  height: 2em; padding: 0 1.6em; font-weight: 800; line-height: 1; letter-spacing: 0.04em;
+  filter: drop-shadow(0 0.08em 0.12em rgba(0,0,0,0.05)); }
+.ai-ribbon-small { font-size: 14px; } .ai-ribbon-middle { font-size: 20px; } .ai-ribbon-large { font-size: 28px; }
+.ai-ribbon .rText { position: relative; z-index: 4; font-weight: 900; padding-top: 0.11em; color: var(--rt); }
+.ai-ribbon .rBack { position: absolute; width: 1.7em; height: 1.7em; bottom: -0.4em; background: var(--rb); z-index: 1; }
+.ai-ribbon .rBack.l { left: -0.55em; clip-path: polygon(100% 0%, 100% 100%, 0% 100%, 30% 50%, 0% 0%); }
+.ai-ribbon .rBack.r { right: -0.55em; clip-path: polygon(0% 0%, 100% 0%, 70% 50%, 100% 100%, 0% 100%); }
+.ai-ribbon .rFold { position: absolute; top: calc(100% - 0.04em); width: 0; height: 0; z-index: 2; border-style: solid; }
+.ai-ribbon .rFold.l { left: 0; border-width: 0 0.95em 0.45em 0; border-color: transparent var(--rk) transparent transparent; }
+.ai-ribbon .rFold.r { right: 0; border-width: 0 0 0.45em 0.95em; border-color: transparent transparent transparent var(--rk); }
+.ai-ribbon .rFront { position: absolute; inset: 0 0.1em; border-radius: 0.2em; background: var(--rf);
+  transform: perspective(11.5em) rotateX(3deg); box-shadow: inset 0 -0.06em 0 rgba(0,0,0,0.05); z-index: 3; }
+
+/* ───── Input ───── */
+.ai-input { display: inline-flex; align-items: center; gap: 6px; width: 100%;
+  background: rgb(247,243,223); border: 2px solid #c4b89e; color: #725d42; font-weight: 500;
+  letter-spacing: 0.01em; transition: all var(--d-base) var(--ease); }
+.ai-input-small { height: 32px; padding: 0 14px; font-size: 12px; border-radius: 40px; }
+.ai-input-middle { height: 40px; padding: 0 18px; font-size: 14px; border-radius: 50px; }
+.ai-input-large { height: 48px; padding: 0 22px; font-size: 16px; border-radius: 50px; }
+.ai-input.area { align-items: flex-start; height: auto; padding: 12px 18px; border-radius: 18px; }
+.ai-input:hover { border-color: #a89878; }
+.ai-input:focus-within { border-color: #ffcc00; box-shadow: 0 0 0 3px rgba(255,204,0,0.15); }
+.ai-input input, .ai-input textarea { border: none; outline: none; background: transparent; color: inherit;
+  font: inherit; letter-spacing: inherit; width: 100%; resize: none; }
+.ai-input input::placeholder, .ai-input textarea::placeholder { color: #c4b89e; font-weight: 400; }
+.ai-input .affix { color: #a0936e; display: inline-flex; }
+
+/* ───── Switch ───── */
+.ai-switch { position: relative; display: inline-flex; align-items: center; min-width: 52px; height: 28px;
+  border-radius: 50px; background: #d4c9b4; border: 2.5px solid #c4b89e; cursor: pointer;
+  box-shadow: inset 0 2px 4px rgba(114,93,66,0.15); transition: all var(--d-base) var(--ease); flex-shrink: 0; }
+.ai-switch:focus-visible { outline: 2px solid #ffcc00; outline-offset: 2px; }
+.ai-switch:hover { border-color: #a89878; }
+.ai-switch .handle { position: absolute; top: 50%; left: 2px; transform: translateY(-50%);
+  width: 21px; height: 21px; border-radius: 50%; background: rgb(247,243,223); border: 2.5px solid #c4b89e;
+  transition: all var(--d-base) var(--ease); }
+.ai-switch .stxt { font-size: 11px; font-weight: 700; color: #fff; letter-spacing: 0.02em;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.1); padding: 0 8px 0 28px; width: 100%; text-align: center; }
+.ai-switch.on { background: #86d67a; border-color: #6fba2c; box-shadow: inset 0 2px 4px rgba(90,158,30,0.20); }
+.ai-switch.on:hover { background: #7ccc70; border-color: #5a9e1e; }
+.ai-switch.on .handle { left: calc(100% - 24px); border-color: #6fba2c; }
+.ai-switch.on .stxt { padding: 0 28px 0 8px; }
+.ai-switch[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
+
+/* ───── Service status ───── */
+.svc-row { display: flex; align-items: center; gap: 12px; padding: 13px 4px; border-bottom: 1px dashed rgba(159,146,125,0.4); flex-wrap: wrap; }
+.svc-row:last-child { border-bottom: none; }
+.svc-ico { width: 26px; height: 26px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+.svc-name { font-weight: 700; font-size: 14px; color: var(--text-body); min-width: 132px; }
+.svc-detail { flex: 1; font-size: 12.5px; color: var(--text-secondary); min-width: 0; }
+.svc-badge { font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 50px; letter-spacing: 0.02em; white-space: nowrap; }
+.badge-ok { background: #e8f4da; color: #5a9e1e; border: 1.5px solid #a8d98a; }
+.badge-missing { background: #f0ece2; color: #8a7b66; border: 1.5px solid #c4b89e; }
+.badge-verified { background: #e6f9f6; color: #11a89b; border: 1.5px solid #82d5bb; }
+.badge-testing { background: #fff6d6; color: #dba90e; border: 1.5px solid #f5c31c; }
+.badge-failed { background: #fbe3e3; color: #c94444; border: 1.5px solid #e89a9a; }
+
+/* ───── Time HUD ───── */
+.ai-time { display: inline-flex; align-items: center; gap: 24px; padding: 14px 32px;
+  background: linear-gradient(180deg, #fff 0%, #f8f8f0 100%); border: 3px solid #d4cfc3; border-radius: 18px; }
+.ai-time .date-sec { display: flex; flex-direction: column; align-items: flex-start; padding-right: 24px; border-right: 3px solid rgba(159,146,125,0.35); }
+.ai-time .wday { color: #6fba2c; font-weight: 900; font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; }
+.ai-time .mday { color: #8b7355; font-weight: 800; font-size: 21px; }
+.ai-time .clk { color: #8b7355; font-weight: 900; font-size: 42px; letter-spacing: 2px; font-variant-numeric: tabular-nums; }
+.blink { animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ───── Wallet ───── */
+.ai-wallet { display: inline-flex; flex-direction: column; align-items: center; position: relative; }
+.ai-wallet .pill { display: flex; align-items: center; justify-content: center; border-radius: 999px;
+  background: #b3a046; color: #fff;
+  box-shadow: inset 0 -6px 0 rgba(91,78,30,0.18), inset 0 0 0 2px rgba(91,78,30,0.12), 0 0 0 var(--halo) #fffbe7, 0 6px 14px rgba(91,78,30,0.18); }
+.ai-wallet .val { font-weight: 800; letter-spacing: 0.04em; color: #fff; padding: 0 12px; white-space: nowrap;
+  font-variant-numeric: tabular-nums; text-shadow: 0 2px 0 rgba(91,78,30,0.55), 0 0 1px rgba(91,78,30,0.55); }
+.ai-wallet .bag { position: absolute; left: 50%; top: 0; transform: translateX(-50%);
+  filter: drop-shadow(0 4px 6px rgba(91,78,30,0.18)); z-index: 2; pointer-events: none; }
+.ai-wallet:hover .bag { animation: walletBagBounce 0.5s ease-in-out; }
+@keyframes walletBagBounce { 35% { transform: translateX(-50%) translateY(-8px) rotate(-6deg); } 70% { transform: translateX(-50%) translateY(-2px) rotate(3deg); } 100% { transform: translateX(-50%) translateY(0) rotate(0); } }
+
+/* ───── Tooltip ───── */
+.ai-tip-wrap { position: relative; display: inline-flex; }
+.ai-tip { position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%);
+  background: rgb(247,243,223); border: 2px solid #c4b89e; border-radius: 16px; padding: 6px 12px;
+  max-width: 240px; font-size: 12px; font-weight: 500; color: #725d42; line-height: 1.5;
+  box-shadow: 0 3px 10px rgba(61,52,40,0.10); z-index: 100; white-space: nowrap; pointer-events: none; }
+.ai-tip::after { content: ''; position: absolute; top: 100%; left: 50%; width: 8px; height: 8px;
+  background: rgb(247,243,223); border-right: 2px solid #c4b89e; border-bottom: 2px solid #c4b89e;
+  border-radius: 2px; transform: translate(-50%, -5px) rotate(45deg); }
+
+/* ───── Modal ───── */
+.ai-modal-backdrop { position: fixed; inset: 0; background: rgba(40,30,20,0.45); backdrop-filter: blur(2px);
+  z-index: 500; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.ai-modal { width: 480px; max-width: 100%; clip-path: url(#animal-modal-clip); background: rgb(247,243,223);
+  padding: 48px 48px 40px; color: #725d42; }
+.ai-modal-title { font-size: 22px; font-weight: 900; color: var(--text); margin: 0 0 6px; letter-spacing: 0.02em; }
+.ai-modal-body { font-size: 14px; line-height: 1.6; }
+.ai-modal-foot { display: flex; gap: 12px; justify-content: center; margin-top: 24px; }
+
+/* ───── Loading overlay ───── */
+.ai-loading { position: fixed; inset: 0; z-index: 600; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 16px; background: rgba(247,243,223,0.78); backdrop-filter: blur(2px); }
+.ai-loading .lspin { animation: lspin 1s linear infinite; color: var(--primary); }
+.ai-loading .lspin circle { animation: ldash 1.5s ease-in-out infinite; stroke-linecap: round; }
+@keyframes lspin { to { transform: rotate(360deg); } }
+@keyframes ldash {
+  0% { stroke-dasharray: 1, 150; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: 90, 150; stroke-dashoffset: -35; }
+  100% { stroke-dasharray: 90, 150; stroke-dashoffset: -124; }
+}
+
+/* ───── Divider ───── */
+.ai-divider { display: flex; align-items: center; gap: 12px; margin: 14px 0; }
+.ai-divider .ln { flex: 1; height: 2px; background: repeating-linear-gradient(90deg, #d8d0c3 0 6px, transparent 6px 12px); }
+.ai-divider.teal .ln { background: repeating-linear-gradient(90deg, #82d5bb 0 6px, transparent 6px 12px); }
+.ai-divider .leaf { font-size: 15px; }
+</style>
+</head>
+<body>
+
+<!-- Modal blob clip-path (must be injected once) -->
+<svg style="position:absolute;width:0;height:0" aria-hidden="true">
+  <defs>
+    <clipPath id="animal-modal-clip" clipPathUnits="objectBoundingBox">
+      <path d="M0.501,0.005 L0.501,0.005 L0.523,0.005 L0.549,0.006 C0.704,0.01,0.796,0.017,0.825,0.027 L0.827,0.028 C0.872,0.045,0.939,0.044,0.978,0.17 C1,0.254,1,0.365,0.99,0.505 L0.988,0.513 C0.979,0.558,0.971,0.598,0.965,0.633 C0.956,0.689,0.979,0.77,0.964,0.865 C0.953,0.928,0.921,0.966,0.869,0.979 C0.821,0.986,0.773,0.992,0.726,0.995 L0.712,0.996 L0.694,0.997 C0.648,1,0.586,1,0.507,1 L0.501,1 L0.464,1 C0.385,1,0.325,0.998,0.283,0.995 C0.234,0.992,0.184,0.987,0.133,0.979 C0.081,0.966,0.05,0.928,0.039,0.865 C0.023,0.77,0.047,0.689,0.037,0.633 C0.031,0.595,0.023,0.552,0.013,0.505 C-0.006,0.365,-0.002,0.254,0.024,0.17 C0.064,0.045,0.13,0.045,0.174,0.028 L0.175,0.028 C0.204,0.017,0.303,0.009,0.474,0.005 L0.501,0.005" />
+    </clipPath>
+  </defs>
+</svg>
+
+<div id="root"></div>
+
+<!-- Server injects real dashboard stats here (see web/app.py /island route) -->
+<script>try { window.__PONY_STATS__ = JSON.parse('__PONY_STATS_JSON__'); } catch (e) { window.__PONY_STATS__ = {}; }</script>
+
+<script type="text/babel" data-presets="react,typescript">
+const { useState, useEffect } = React;
+
+/* ============================================================
+   1) Inline animal-island-ui components (mirror real API)
+   ============================================================ */
+
+function Button({ type = 'default', size = 'middle', loading = false, disabled = false, ghost = false, block = false, className = '', children, ...rest }) {
+  let cls = `ai-btn ai-btn-${type} ai-btn-${size}`;
+  if (block) cls += ' ai-btn-block';
+  if (loading) cls += ' ai-btn-loading';
+  if (ghost) cls += ' ai-btn-ghost';
+  return (
+    <button className={cls + ' ' + className} disabled={disabled || loading} {...rest}>
+      {loading ? '处理中…' : children}
+    </button>
+  );
+}
+
+const CARD_PATTERNS = {
+  default:      { bg:'rgb(247,243,223)', d18:'rgba(196,184,158,0.30)', d12:'rgba(196,184,158,0.18)', bd:'#c4b89e', c:'#725d42' },
+  'app-pink':   { bg:'#fde4e8', d18:'rgba(248,166,178,0.18)', d12:'rgba(255,200,210,0.12)', bd:'#f8a6b2', c:'#a85565' },
+  'app-blue':   { bg:'#e4e8fb', d18:'rgba(136,157,240,0.18)', d12:'rgba(180,195,250,0.12)', bd:'#889df0', c:'#34408f' },
+  'app-teal':   { bg:'#dff5ee', d18:'rgba(130,213,187,0.22)', d12:'rgba(180,230,212,0.13)', bd:'#82d5bb', c:'#2f6f5a' },
+  'app-yellow': { bg:'#fdf3d8', d18:'rgba(247,205,103,0.24)', d12:'rgba(250,225,160,0.14)', bd:'#f7cd67', c:'#7a5e10' },
+  'app-red':    { bg:'#ffe0de', d18:'rgba(252,115,109,0.18)', d12:'rgba(255,170,165,0.12)', bd:'#fc736d', c:'#93302c' },
+  'app-green':  { bg:'#e6f2e6', d18:'rgba(138,198,138,0.20)', d12:'rgba(190,225,190,0.12)', bd:'#8ac68a', c:'#2f5f2f' },
+  'app-orange': { bg:'#fbe7da', d18:'rgba(229,146,102,0.18)', d12:'rgba(245,195,165,0.12)', bd:'#e59266', c:'#7a3f1c' },
+  purple:       { bg:'#f0e3fb', d18:'rgba(183,125,238,0.18)', d12:'rgba(215,180,245,0.12)', bd:'#b77dee', c:'#5a2e8a' },
+};
+const CARD_COLORS = {
+  default:['rgb(247,243,223)','#725d42'], 'app-pink':['#f8a6b2','#fff'], purple:['#b77dee','#fff'],
+  'app-blue':['#889df0','#fff'], 'app-yellow':['#f7cd67','#725d42'], 'app-orange':['#e59266','#fff'],
+  'app-teal':['#82d5bb','#fff'], 'app-green':['#8ac68a','#fff'], 'app-red':['#fc736d','#fff'],
+  'lime-green':['#d1da49','#3d5a1a'], 'yellow-green':['#ecdf52','#725d42'], brown:['#9a835a','#fff'], 'warm-peach-pink':['#e18c6f','#fff'],
+};
+function Card({ pattern = 'none', color, type, hoverable = true, className = '', style = {}, children, ...rest }) {
+  let cls = 'ai-card';
+  let s = { ...style };
+  if (type === 'dashed') cls += ' ai-card-dashed';
+  else if (pattern && CARD_PATTERNS[pattern]) {
+    const p = CARD_PATTERNS[pattern];
+    s.background = `radial-gradient(circle, ${p.d18} 1.5px, transparent 1.5px) 0 0/28px 28px, radial-gradient(circle, ${p.d12} 1px, transparent 1px) 7px 7px/14px 14px, ${p.bg}`;
+    s.border = `1.5px solid ${p.bd}`; s.color = p.c;
+  } else if (color && CARD_COLORS[color]) {
+    s.background = CARD_COLORS[color][0]; s.color = CARD_COLORS[color][1];
+  }
+  if (hoverable && type !== 'dashed') cls += ' hoverable';
+  return <div className={cls + ' ' + className} style={s} {...rest}>{children}</div>;
+}
+
+const RIBBON = {
+  'default-green': { rf:'#27d039', rb:'#20992a', rk:'#115017', rt:'#fff' },
+  'app-pink':      { rf:'#f8a6b2', rb:'#e06880', rk:'#a03060', rt:'#fff' },
+  purple:          { rf:'#b77dee', rb:'#9050d0', rk:'#5a1a9a', rt:'#fff' },
+  'app-blue':      { rf:'#889df0', rb:'#5068d8', rk:'#2030a0', rt:'#fff' },
+  'app-yellow':    { rf:'#f7cd67', rb:'#d4a030', rk:'#8a6010', rt:'#725d42' },
+  'app-orange':    { rf:'#e59266', rb:'#c06a30', rk:'#7a3a10', rt:'#fff' },
+  'app-teal':      { rf:'#82d5bb', rb:'#40a880', rk:'#186048', rt:'#fff' },
+  'app-green':     { rf:'#8ac68a', rb:'#509050', rk:'#205020', rt:'#fff' },
+  'app-red':       { rf:'#fc736d', rb:'#d43030', rk:'#900010', rt:'#fff' },
+  'lime-green':    { rf:'#d1da49', rb:'#90a010', rk:'#485800', rt:'#3d5a1a' },
+  'yellow-green':  { rf:'#ecdf52', rb:'#c0b010', rk:'#706800', rt:'#725d42' },
+  brown:           { rf:'#9a835a', rb:'#705830', rk:'#3a2810', rt:'#fff' },
+  'warm-peach-pink': { rf:'#e18c6f', rb:'#b85a30', rk:'#6a2a10', rt:'#fff' },
+};
+function Title({ color = 'default-green', size = 'middle', children }) {
+  const c = RIBBON[color] || RIBBON['default-green'];
+  const vars = { '--rf': c.rf, '--rb': c.rb, '--rk': c.rk, '--rt': c.rt };
+  return (
+    <span className={`ai-ribbon ai-ribbon-${size}`} style={vars}>
+      <span className="rBack l"></span><span className="rBack r"></span>
+      <span className="rFold l"></span><span className="rFold r"></span>
+      <span className="rFront"></span>
+      <span className="rText">{children}</span>
+    </span>
+  );
+}
+
+function Input({ size = 'middle', prefix, suffix, rows, className = '', ...rest }) {
+  return (
+    <label className={`ai-input ai-input-${size} ${rows ? 'area' : ''} ${className}`}>
+      {prefix && <span className="affix">{prefix}</span>}
+      {rows ? <textarea rows={rows} {...rest} /> : <input {...rest} />}
+      {suffix && <span className="affix">{suffix}</span>}
+    </label>
+  );
+}
+
+function Switch({ checked, defaultChecked = false, onChange, checkedChildren, unCheckedChildren, disabled = false }) {
+  const [inner, setInner] = useState(defaultChecked);
+  const on = checked !== undefined ? checked : inner;
+  const toggle = () => {
+    if (disabled) return;
+    if (checked === undefined) setInner(!on);
+    onChange && onChange(!on);
+  };
+  return (
+    <span role="switch" aria-checked={on} aria-disabled={disabled} tabIndex={0}
+      className={`ai-switch ${on ? 'on' : ''}`} onClick={toggle}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } }}>
+      <span className="stxt">{on ? checkedChildren : unCheckedChildren}</span>
+      <span className="handle"></span>
+    </span>
+  );
+}
+
+function Time() {
+  const [now, setNow] = useState(new Date());
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
+  const wd = ['SUN','MON','TUE','WED','THU','FRI','SAT'][now.getDay()];
+  const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][now.getMonth()];
+  const p = (n) => String(n).padStart(2, '0');
+  return (
+    <div className="ai-time">
+      <div className="date-sec">
+        <span className="wday">{wd}</span>
+        <span className="mday">{mo} {now.getDate()}</span>
+      </div>
+      <div className="clk">
+        {p(now.getHours())}<span className="blink">:</span>{p(now.getMinutes())}<span className="blink">:</span>{p(now.getSeconds())}
+      </div>
+    </div>
+  );
+}
+
+const WALLET_SIZES = { small:{w:96,h:32,bag:38,t:12,halo:3}, medium:{w:132,h:42,bag:50,t:17,halo:4}, large:{w:176,h:54,bag:66,t:22,halo:6} };
+function BagIcon({ s }) {
+  return (
+    <svg width={s} height={s} viewBox="0 0 64 64">
+      <path d="M24 13 L40 13 L36 23 Q55 35 49 51 Q43 60 32 60 Q21 60 15 51 Q9 35 28 23 Z" fill="#caa14a" stroke="#7d5a1c" strokeWidth="2.5"/>
+      <path d="M24 13 L40 13 L37 20 L27 20 Z" fill="#e0c068" stroke="#7d5a1c" strokeWidth="2.5"/>
+      <circle cx="32" cy="42" r="9" fill="#f6e08a" stroke="#7d5a1c" strokeWidth="2.5"/>
+      <text x="32" y="47" fontSize="13" fontWeight="900" textAnchor="middle" fill="#7d5a1c">¥</text>
+    </svg>
+  );
+}
+function Wallet({ value, size = 'medium', thousandSeparator = ',' }) {
+  const cfg = WALLET_SIZES[size] || WALLET_SIZES.medium;
+  let text;
+  if (value === undefined || value === null) text = '00,000';
+  else if (typeof value === 'number') text = thousandSeparator ? value.toLocaleString('en-US').replace(/,/g, thousandSeparator) : String(value);
+  else text = value;
+  return (
+    <div className="ai-wallet" style={{ width: cfg.w, paddingTop: cfg.bag * 0.7, '--halo': cfg.halo + 'px' }}>
+      <span className="bag" style={{ width: cfg.bag, height: cfg.bag }}><BagIcon s={cfg.bag} /></span>
+      <span className="pill" style={{ width: cfg.w, height: cfg.h }}>
+        <span className="val" style={{ fontSize: cfg.t }}>{text}</span>
+      </span>
+    </div>
+  );
+}
+
+function Tooltip({ title, children }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="ai-tip-wrap" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      {show && <span className="ai-tip">{title}</span>}
+    </span>
+  );
+}
+
+function Modal({ open, title, children, onConfirm, onCancel, confirmText = '确定', cancelText = '取消' }) {
+  if (!open) return null;
+  return (
+    <div className="ai-modal-backdrop" onClick={onCancel}>
+      <div className="ai-modal" onClick={(e) => e.stopPropagation()}>
+        {title && <h3 className="ai-modal-title">{title}</h3>}
+        <div className="ai-modal-body">{children}</div>
+        <div className="ai-modal-foot">
+          <Button type="default" size="middle" onClick={onCancel}>{cancelText}</Button>
+          <Button type="confirm" size="middle" onClick={onConfirm}>{confirmText}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Loading({ show, text = '加载中…' }) {
+  if (!show) return null;
+  return (
+    <div className="ai-loading">
+      <svg className="lspin" width="56" height="56" viewBox="0 0 50 50">
+        <circle cx="25" cy="25" r="20" fill="none" stroke="currentColor" strokeWidth="4" />
+      </svg>
+      <span style={{ fontWeight: 700, color: 'var(--text-body)' }}>{text}</span>
+    </div>
+  );
+}
+
+function Divider({ type = 'line-brown' }) {
+  const teal = type.includes('teal');
+  return <div className={`ai-divider ${teal ? 'teal' : ''}`}><span className="ln"></span><span className="leaf">🍃</span><span className="ln"></span></div>;
+}
+
+/* ============================================================
+   2) Page composition (uses the library components above)
+   ============================================================ */
+
+const STATS = (typeof window !== 'undefined' && window.__PONY_STATS__) || {};
+const fmt = (n) => (n === undefined || n === null ? '—' : Number(n).toLocaleString('en-US'));
+
+const NAV = [
+  { k: 'dashboard', ico: '📊', label: '仪表盘', href: '/island' },
+  { k: 'groups', ico: '👥', label: '群组', href: '/groups' },
+  { k: 'blacklist', ico: '🚫', label: '黑名单', href: '/blacklist' },
+  { k: 'rss', ico: '📡', label: 'RSS', href: '/rss' },
+  { k: 'media', ico: '🎬', label: '媒体解析', href: '/media' },
+  { k: 'errors', ico: '⚠️', label: '错误日志', href: '/media-errors' },
+  { k: 'psn', ico: '🎮', label: 'PS 库', href: '/psn-library' },
+  { k: 'ai', ico: '🤖', label: 'AI 统计', href: '/ai-stats' },
+  { k: 'components', ico: '🧩', label: '组件中心', href: '/components' },
+  { k: 'composer', ico: '✏️', label: '消息编辑器', href: '/composer' },
+];
+
+const SERVICES_INIT = [
+  { key: 'telegram', ico: '✈️', label: 'Telegram Bot', detail: '长轮询运行中', status: 'ok', testable: false },
+  { key: 'claude', ico: '🤖', label: 'Claude AI', detail: 'claude-opus-4-8 · 已配置密钥', status: 'ok', testable: true },
+  { key: 'tmdb', ico: '🎞️', label: 'TMDB（影视）', detail: 'API Key 已配置', status: 'ok', testable: true },
+  { key: 'lastfm', ico: '🎵', label: 'Last.fm（音乐）', detail: '未配置 API Key', status: 'missing', testable: true },
+  { key: 'rawg', ico: '🕹️', label: 'RAWG.io（游戏）', detail: 'API Key 已配置', status: 'ok', testable: true },
+  { key: 'ytdlp', ico: '⬇️', label: 'yt-dlp（媒体）', detail: 'ffmpeg 就绪', status: 'ok', testable: true },
+];
+
+const BADGE_LABEL = { ok: '✔ 已配置', missing: '✕ 未设置', verified: '✔ 已验证', testing: '⟳ 测试中…', failed: '✕ 失败' };
+
+function Sidebar({ active }) {
+  return (
+    <nav className="sidebar">
+      <div className="brand"><span className="pony">🐴</span><span>Ponygram</span></div>
+      <div className="nav">
+        {NAV.map((n) => (
+          <a key={n.k} href={n.href} className={`nav-link ${active === n.k ? 'active' : ''}`}>
+            <span className="ico">{n.ico}</span><span>{n.label}</span>
+          </a>
+        ))}
+      </div>
+      <div className="nav nav-foot">
+        <a className="nav-link logout" href="/logout"><span className="ico">↩️</span><span>登出</span></a>
+      </div>
+    </nav>
+  );
+}
+
+function StatCard({ pattern, ico, label, num, sub }) {
+  return (
+    <Card pattern={pattern}>
+      <div className="stat-label"><span>{ico}</span><span>{label}</span></div>
+      <div className="stat-num">{num}</div>
+      {sub && <div className="stat-sub">{sub}</div>}
+    </Card>
+  );
+}
+
+function ServiceStatus() {
+  const [svcs, setSvcs] = useState(SERVICES_INIT);
+  const [loading, setLoading] = useState(false);
+
+  const setStatus = (key, status) => setSvcs((cur) => cur.map((s) => (s.key === key ? { ...s, status } : s)));
+
+  const testOne = async (key) => {
+    setStatus(key, 'testing');
+    try {
+      const r = await fetch(`/health/check/${key}`, { method: 'POST' });
+      const j = await r.json();
+      setStatus(key, j.status === 'ok' ? 'verified' : 'failed');
+    } catch (e) {
+      setStatus(key, 'failed');
+    }
+  };
+
+  const refreshAll = async () => {
+    setLoading(true);
+    try {
+      const r = await fetch('/health');
+      const j = await r.json();
+      setSvcs((cur) => cur.map((s) => (j[s.key] ? { ...s, status: j[s.key].status, detail: j[s.key].detail || s.detail } : s)));
+    } catch (e) {
+      setSvcs(SERVICES_INIT);
+    } finally {
+      setTimeout(() => setLoading(false), 500);
+    }
+  };
+
+  return (
+    <Card hoverable={false}>
+      <div className="panel-h">
+        <span className="panel-title">服务状态</span>
+        <Button type="default" size="small" onClick={refreshAll}>🔄 刷新</Button>
+      </div>
+      {svcs.map((s) => (
+        <div className="svc-row" key={s.key}>
+          <span className="svc-ico">{s.ico}</span>
+          <span className="svc-name">{s.label}</span>
+          <span className="svc-detail">{s.detail}</span>
+          <span className={`svc-badge badge-${s.status}`}>{BADGE_LABEL[s.status] || s.status}</span>
+          {s.testable && (
+            <Button type="text" size="small" disabled={s.status === 'testing'} onClick={() => testOne(s.key)}>测试</Button>
+          )}
+        </div>
+      ))}
+      <Loading show={loading} text="正在检测服务…" />
+    </Card>
+  );
+}
+
+function QuickActions({ onBroadcast }) {
+  return (
+    <Card pattern="default" hoverable={false}>
+      <div className="panel-title" style={{ marginBottom: 14 }}>快捷操作</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+        <Button type="primary" size="middle" block onClick={onBroadcast}>📣 发送广播</Button>
+        <Button type="default" size="middle" block onClick={() => (window.location.href = '/groups')}>🎛️ 管理群组</Button>
+        <Button type="default" size="middle" block onClick={() => (window.location.href = '/rss')}>📡 管理 RSS</Button>
+        <Button type="dashed" size="middle" block onClick={() => (window.location.href = '/settings')}>⚙️ 设置中心</Button>
+        <Button type="danger" size="middle" block onClick={() => (window.location.href = '/blacklist')}>🚫 管理黑名单</Button>
+      </div>
+    </Card>
+  );
+}
+
+function MediaShortcut() {
+  const [enabled, setEnabled] = useState(true);
+  return (
+    <Card pattern="app-green">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 17, fontWeight: 800, marginBottom: 4 }}>🎬 媒体解析</div>
+          <div style={{ fontSize: 13, opacity: 0.9 }}>17 个平台 · Cookie 管理 · 解析调试器</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontSize: 13, fontWeight: 700 }}>
+            <span>启用</span>
+            <Switch checked={enabled} onChange={setEnabled} checkedChildren="ON" unCheckedChildren="OFF" />
+          </div>
+          <Button type="primary" size="middle" onClick={() => (window.location.href = '/media')}>打开 →</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function App() {
+  const [modal, setModal] = useState(false);
+  const [pin, setPin] = useState(false);
+  const [msg, setMsg] = useState('');
+
+  return (
+    <div className="app-shell">
+      <Sidebar active="dashboard" />
+      <main className="main">
+
+        <div className="head-row">
+          <Title color="app-teal" size="large">控制台</Title>
+          <div className="head-right">
+            <Tooltip title="数据库登记的总用户数">
+              <Wallet value={Number(STATS.users) || 0} size="medium" />
+            </Tooltip>
+            <Time />
+          </div>
+        </div>
+
+        <div className="grid-stats">
+          <StatCard pattern="app-blue" ico="👥" label="总用户数" num={fmt(STATS.users)} />
+          <StatCard pattern="app-teal" ico="💬" label="群组" num={fmt(STATS.groups)} sub={`▶ ${STATS.active ?? 0} 个已激活`} />
+          <StatCard pattern="app-red" ico="🚫" label="黑名单" num={fmt(STATS.blacklist)} />
+          <StatCard pattern="app-yellow" ico="📡" label="RSS 订阅源" num={fmt(STATS.rss)} />
+        </div>
+
+        <div className="grid-2">
+          <QuickActions onBroadcast={() => setModal(true)} />
+          <ServiceStatus />
+        </div>
+
+        <MediaShortcut />
+
+        <Divider type="line-teal" />
+        <div style={{ textAlign: 'center', fontSize: 12.5, color: 'var(--text-secondary)', fontWeight: 600, paddingTop: 6 }}>
+          🌴 Ponygram Admin · 由 animal-island-ui v0.9.5 驱动 ·
+          <a href="/" style={{ color: 'var(--primary-active)', marginLeft: 6 }}>返回经典后台</a>
+        </div>
+
+      </main>
+
+      <Modal
+        open={modal}
+        title="发送广播"
+        confirmText="立即发送"
+        cancelText="取消"
+        onCancel={() => setModal(false)}
+        onConfirm={() => setModal(false)}
+      >
+        <p style={{ marginTop: 0 }}>向全部已激活群组群发一条消息（演示，未实际发送）：</p>
+        <Input rows={3} placeholder="输入要广播的内容…" value={msg} onChange={(e) => setMsg(e.target.value)} />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, fontWeight: 700 }}>
+          <Switch checked={pin} onChange={setPin} checkedChildren="置顶" unCheckedChildren="普通" />
+          <span>发送后在群内置顶</span>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

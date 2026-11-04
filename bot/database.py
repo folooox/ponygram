@@ -56,6 +56,8 @@ class User(Base):
     last_name = Column(String(128), nullable=True)
     is_bot = Column(Boolean, default=False)
     language_code = Column(String(16), nullable=True)
+    last_private_seen = Column(DateTime, nullable=True)
+    last_inline_seen = Column(DateTime, nullable=True)
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -113,6 +115,8 @@ class RssFeed(Base):
     added_at = Column(DateTime, default=datetime.utcnow)
     paused = Column(Boolean, default=False)
     last_fetched = Column(DateTime, nullable=True)
+    target = Column(Text, nullable=True)
+    ai_enabled = Column(Boolean, default=False)
 
 
 class RssSent(Base):
@@ -267,6 +271,10 @@ async def _migrate(conn) -> None:
 
     # Columns added after v1 — (table, column, definition)
     migrations = [
+        ("users", "last_private_seen", "DATETIME"),
+        ("users", "last_inline_seen", "DATETIME"),
+        ("rss_feeds", "target", "TEXT"),
+        ("rss_feeds", "ai_enabled", "BOOLEAN NOT NULL DEFAULT 0"),
         ("group_settings",    "is_active",     "BOOLEAN NOT NULL DEFAULT 0"),
         ("group_settings",    "welcome_text",  "TEXT"),
         ("group_settings",    "goodbye_text",  "TEXT"),
@@ -340,24 +348,23 @@ def get_session() -> AsyncSession:
 # User helpers
 # ---------------------------------------------------------------------------
 
-async def upsert_user(tg_user) -> None:
-    """Insert or update a Telegram User record."""
+async def upsert_user(tg_user, source: str = "private") -> None:
+    """Record users observed in private chat or inline; preserve both entry histories."""
     async with get_session() as s:
-        existing = await s.get(User, tg_user.id)
-        if existing:
-            existing.username = tg_user.username
-            existing.first_name = tg_user.first_name or ""
-            existing.last_name = tg_user.last_name
-            existing.last_seen = datetime.utcnow()
-        else:
-            s.add(User(
-                id=tg_user.id,
-                username=tg_user.username,
-                first_name=tg_user.first_name or "",
-                last_name=tg_user.last_name,
-                is_bot=tg_user.is_bot,
-                language_code=getattr(tg_user, "language_code", None),
-            ))
+        row = await s.get(User, tg_user.id)
+        if row is None:
+            row = User(id=tg_user.id, first_seen=datetime.utcnow())
+            s.add(row)
+        row.username = getattr(tg_user, "username", None)
+        row.first_name = getattr(tg_user, "first_name", "") or ""
+        row.last_name = getattr(tg_user, "last_name", None)
+        row.is_bot = getattr(tg_user, "is_bot", False)
+        row.language_code = getattr(tg_user, "language_code", None)
+        row.last_seen = datetime.utcnow()
+        if source == "inline":
+            row.last_inline_seen = row.last_seen
+        elif source == "private":
+            row.last_private_seen = row.last_seen
         await s.commit()
 
 

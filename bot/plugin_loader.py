@@ -98,6 +98,7 @@ class PluginLoader:
 
         py_files = sorted(
             f for f in directory.glob("*.py") if f.name != "__init__.py"
+            and (package_prefix != "modules" or f.stem in {"start", "catalog", "rss"})
         )
 
         if not py_files:

@@ -16,15 +16,15 @@ import signal
 import sys
 from pathlib import Path
 
-from telegram import Bot
+from telegram import Bot, BotCommandScopeAllPrivateChats, MenuButtonCommands
 from telegram.ext import Application, ApplicationBuilder
 
 from bot.config import load_config
-from bot.database import init_db
+from bot.database import init_db, get_bot_config, set_bot_config
 from bot.error_handler import error_handler
 from bot.logger import get_logger, setup_logging
 from bot.plugin_loader import PluginLoader
-from bot.router import registry, setup_handlers
+from bot.router import registry
 
 BASE_DIR = Path(__file__).parent
 
@@ -51,6 +51,11 @@ async def main() -> None:
 
     # Initialise database
     await init_db(cfg.database_url)
+    if cfg.tmdb_api_key and not await get_bot_config("tmdb_api_key"):
+        await set_bot_config("tmdb_api_key", cfg.tmdb_api_key)
+    # Preserve existing configured global AI; no-key deployments stay disabled.
+    if await get_bot_config("ai_enabled") is None:
+        await set_bot_config("ai_enabled", "1" if await get_bot_config("deepseek_api_key") else "0")
 
     app: Application = (
         ApplicationBuilder()
@@ -70,9 +75,7 @@ async def main() -> None:
     await loader.load_modules(app, str(BASE_DIR / "modules"))
     await loader.load_plugins(app, str(BASE_DIR / "plugins"))
 
-    # Register any remaining handlers accumulated in the registry
-    # (modules may have already added their own handlers directly)
-    setup_handlers(app)
+    # Modules register each handler once; registry supplies help/menu metadata.
 
     # Start web admin UI (optional)
     _web_server = None
@@ -104,8 +107,12 @@ async def main() -> None:
 
         # Publish public commands to Telegram (visible in command menu)
         public_commands = registry.get_bot_commands(is_admin=False)
+        order = {name: i for i, name in enumerate(["start", "help", "movie", "tv", "music", "book"])}
+        public_commands.sort(key=lambda command: order[command.command])
         if public_commands:
             await app.bot.set_my_commands(public_commands)
+            await app.bot.set_my_commands(public_commands, scope=BotCommandScopeAllPrivateChats())
+            await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
             log.info("Bot commands set", count=len(public_commands))
 
         if cfg.use_webhook:

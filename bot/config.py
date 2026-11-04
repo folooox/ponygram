@@ -37,8 +37,6 @@ class Config:
 
     # Optional external API keys (may be empty strings)
     tmdb_api_key: str
-    lastfm_api_key: str
-    claude_api_key: str
 
     # Web admin UI
     web_enabled: bool
@@ -153,8 +151,6 @@ def load_config(env_file: Optional[str] = None) -> Config:
         webhook_url=webhook_url,
         webhook_port=webhook_port,
         tmdb_api_key=os.getenv("TMDB_API_KEY", "").strip(),
-        lastfm_api_key=os.getenv("LASTFM_API_KEY", "").strip(),
-        claude_api_key=os.getenv("CLAUDE_API_KEY", "").strip(),
         web_enabled=web_enabled,
         web_host=web_host,
         web_port=web_port,
