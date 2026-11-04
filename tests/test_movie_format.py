@@ -1,17 +1,28 @@
 """FilmSpot template shared by /movie, /tv, and inline movie/tv.
 
 No network. DeepSeek is optional: a missing polish result keeps derived bullets.
+Music and book cards stay on the shared catalog renderer.
 """
 
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
-from modules.movie import (
-    _COMPONENT,
+import httpx
+from telegram.ext import Application
+
+from bot.database import init_db, set_bot_config
+from bot.plugin_loader import PluginLoader
+from bot.router import registry
+from services import catalog
+from services.filmspot import (
     _format_movie,
+    apply_language_gaps,
     apply_selling_lines,
     card_text,
     choose_selling_points,
@@ -21,6 +32,8 @@ from modules.movie import (
     render_filmspot,
     utf16_len,
 )
+from modules import catalog as telegram_catalog
+from web.app import create_web_app
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -143,6 +156,31 @@ class FormatTests(unittest.TestCase):
         self.assertEqual(merged["genres"][0]["name"], "动作")
         self.assertEqual(merged["overview"], "搜索简介")
 
+    def test_english_fills_only_empty_fields(self) -> None:
+        zh = {
+            "title": "盗梦空间",
+            "overview": "中文简介",
+            "genres": [{"name": "科幻"}],
+            "credits": {"cast": [{"name": "演员"}], "crew": [{"name": "有人", "job": "Writer"}]},
+        }
+        en = {
+            "title": "Inception",
+            "overview": "English plot",
+            "tagline": "Your mind",
+            "genres": [{"name": "Action"}],
+            "credits": {
+                "cast": [{"name": "Leonardo"}],
+                "crew": [{"name": "Nolan", "job": "Director"}],
+            },
+        }
+        merged = apply_language_gaps(zh, en, "movie")
+        self.assertEqual(merged["overview"], "中文简介")
+        self.assertEqual(merged["genres"][0]["name"], "科幻")
+        self.assertEqual(merged["tagline"], "Your mind")
+        jobs = [row["job"] for row in merged["credits"]["crew"]]
+        self.assertIn("Director", jobs)
+        self.assertEqual(merged["credits"]["cast"][0]["name"], "演员")
+
     def test_derived_bullets_and_polish_fallback(self) -> None:
         points = derive_selling_points(_sample())
         self.assertEqual(points[0], "你的思想不再是你的思想")
@@ -163,31 +201,205 @@ class FormatTests(unittest.TestCase):
         self.assertIn("片名", text)
         self.assertIn("卖点", text)
 
+    def test_music_and_book_cards_keep_their_format(self) -> None:
+        music = catalog.Card(
+            "music", "1", "Song", "Apple Music", "https://example.com", facts=[("歌手", "Singer")],
+        )
+        self.assertEqual(
+            catalog.render_card(music),
+            "🎵 <b>Song</b>\n歌手：Singer\n\n<a href=\"https://example.com\">Apple Music</a>",
+        )
+        book = catalog.Card(
+            "book", "1", "Book", "Open Library", "https://example.com",
+            description="A plot.", facts=[("作者", "Author")],
+        )
+        self.assertEqual(
+            catalog.render_card(book),
+            "📚 <b>Book</b>\n作者：Author\n\nA plot.\n\n<a href=\"https://example.com\">Open Library</a>",
+        )
+        self.assertIsNone(catalog.film_caption(music))
+        self.assertIsNone(catalog.film_caption(book))
+
     def test_no_new_commands_or_channel_admin(self) -> None:
-        movie = (ROOT / "modules/movie.py").read_text(encoding="utf-8")
-        self.assertIn('registry.register_command("movie"', movie)
-        self.assertIn('registry.register_command("tv"', movie)
-        for forbidden in (
+        catalog_mod = (ROOT / "modules/catalog.py").read_text(encoding="utf-8")
+        self.assertIn("registry.register_command(kind, command", catalog_mod)
+        self.assertIn("catalog.detail(c)", catalog_mod)
+        self.assertIn("catalog.render_card(card)", catalog_mod)
+        forbidden = (
             "filmspot_channel",
-            "register_command(\"filmspot\"",
-            "register_command(\"gossip\"",
-            "register_command(\"channel_post\"",
-            "register_command(\"channel_text\"",
+            'register_command("filmspot"',
+            'register_command("gossip"',
+            'register_command("channel_post"',
+            'register_command("channel_text"',
             "生成频道稿",
-        ):
-            self.assertNotIn(forbidden, movie)
+        )
+        scanned = list((ROOT / "modules").glob("*.py"))
+        scanned += [ROOT / "services/catalog.py", ROOT / "services/filmspot.py", ROOT / "web/app.py", ROOT / "modules/start.py"]
+        for path in scanned:
+            text = path.read_text(encoding="utf-8")
+            for name in forbidden:
+                self.assertNotIn(name, text, path.name)
         self.assertFalse((ROOT / "modules/filmspot.py").exists())
-        keys = [f.key for f in _COMPONENT.config_fields]
-        self.assertEqual(keys, ["tmdb_api_key"])
-        inline = (ROOT / "modules/inline.py").read_text(encoding="utf-8")
-        self.assertIn("_format_movie(item, prefix, context)", inline)
-        for name in ("book.py", "music.py"):
-            text = (ROOT / "modules" / name).read_text(encoding="utf-8")
-            self.assertNotIn("卖点", text)
-            self.assertNotIn("filmspot", text.lower())
+        self.assertEqual(set(catalog.KINDS), {"movie", "tv", "music", "book"})
+        settings = (ROOT / "web/templates/settings.html").read_text(encoding="utf-8")
+        self.assertIn("deepseek_api_key", settings)
+        self.assertIn("tmdb_api_key", settings)
+        self.assertNotIn("filmspot_channel", settings)
         start = (ROOT / "modules/start.py").read_text(encoding="utf-8")
         self.assertNotIn("/filmspot", start)
         self.assertNotIn("/gossip", start)
+
+
+class DeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        await init_db("sqlite+aiosqlite:///" + self.tmp.name + "/test.db")
+        await catalog.cache.clear()
+
+    async def asyncTearDown(self):
+        from bot import database
+        await database._engine.dispose()
+        self.tmp.cleanup()
+
+    async def test_menu_has_no_new_commands(self):
+        registry._commands.clear()
+        app = Application.builder().token("123:fake").build()
+        loader = PluginLoader()
+        await loader.load_modules(app, "modules")
+        self.assertEqual(set(registry.all_commands), {"start", "help", "movie", "tv", "music", "book"})
+
+    async def test_single_movie_sends_card_and_several_keep_the_picker(self):
+        parts = parts_from_detail(_sample(), "movie")
+        card = catalog.Card(
+            "movie", "1", "盗梦空间", "TMDB", "https://example.com/m",
+            image="https://image.tmdb.org/t/p/w500/inception.jpg", film=parts,
+        )
+        status = SimpleNamespace(edit_text=AsyncMock(), delete=AsyncMock())
+        msg = SimpleNamespace(text="/movie 盗梦空间", reply_text=AsyncMock(return_value=status), reply_photo=AsyncMock())
+        update = SimpleNamespace(effective_message=msg, effective_user=SimpleNamespace(id=1))
+        with patch.object(telegram_catalog, "upsert_user", AsyncMock()), \
+             patch.object(catalog, "search", AsyncMock(return_value=[card])), \
+             patch.object(catalog, "detail", AsyncMock(return_value=card)), \
+             patch.object(catalog, "enabled", AsyncMock(return_value=True)):
+            await telegram_catalog.command(update, SimpleNamespace(args=["盗梦空间"]))
+        status.edit_text.assert_not_awaited()
+        caption = msg.reply_photo.await_args.kwargs["caption"]
+        self.assertIn("片名", caption)
+        self.assertLessEqual(utf16_len(caption), 1024)
+
+        other = catalog.Card("movie", "2", "其他", "TMDB", "https://example.com/o", film=parts)
+        status.edit_text.reset_mock()
+        msg.reply_photo.reset_mock()
+        with patch.object(telegram_catalog, "upsert_user", AsyncMock()), \
+             patch.object(catalog, "search", AsyncMock(return_value=[card, other])), \
+             patch.object(catalog, "detail", AsyncMock()) as detail:
+            await telegram_catalog.command(update, SimpleNamespace(args=["盗梦"]))
+        detail.assert_not_awaited()
+        self.assertIn("reply_markup", status.edit_text.await_args.kwargs)
+        msg.reply_photo.assert_not_awaited()
+
+    async def test_photo_followup_carries_selling_points(self):
+        parts = parts_from_detail(_sample(), "movie")
+        parts["selling"] = ["卖" * 500, "点" * 500, "啊" * 500]
+        card = catalog.Card(
+            "movie", "1", "盗梦空间", "TMDB", "https://example.com",
+            image="https://image.tmdb.org/x.jpg", film=parts,
+        )
+        msg = SimpleNamespace(reply_photo=AsyncMock(), reply_text=AsyncMock())
+        await telegram_catalog.send_card(msg, card)
+        caption = msg.reply_photo.await_args.kwargs["caption"]
+        self.assertLessEqual(utf16_len(caption), 1024)
+        self.assertIn("梗概", caption)
+        follow = msg.reply_text.await_args.args[0]
+        self.assertIn("卖点", follow)
+        self.assertIn("#电影", follow)
+
+    async def test_inline_movie_inserts_the_same_card(self):
+        parts = parts_from_detail(_sample(), "movie")
+        card = catalog.Card("movie", "1", "盗梦空间", "TMDB", "https://example.com", film=parts)
+        query = SimpleNamespace(query="movie 盗梦空间", answer=AsyncMock())
+        with patch.object(catalog, "search", AsyncMock(return_value=[card])), \
+             patch.object(catalog, "detail", AsyncMock(return_value=card)):
+            await telegram_catalog.inline(SimpleNamespace(inline_query=query), None)
+        text = query.answer.await_args.args[0][0].input_message_content.message_text
+        self.assertEqual(text, catalog.render_card(card))
+        self.assertIn("片名", text)
+        self.assertIn("#FilmSpot", text)
+
+    async def test_detail_prefers_zh_and_fills_english_gaps(self):
+        zh = {
+            "title": "盗梦空间",
+            "original_title": "Inception",
+            "overview": "中文简介",
+            "genres": [{"name": "科幻"}],
+            "release_date": "2010-07-16",
+            "vote_average": 8.4,
+            "vote_count": 100,
+            "popularity": 40,
+            "credits": {"cast": [{"name": "演员"}], "crew": [{"name": "诺兰", "job": "导演"}]},
+        }
+        en = {
+            "title": "Inception",
+            "overview": "English plot",
+            "tagline": "Your mind",
+            "genres": [{"name": "Action"}],
+            "credits": {"cast": [{"name": "Leonardo"}], "crew": [{"name": "Nolan", "job": "Director"}]},
+        }
+
+        async def request(url, params=None, **kwargs):
+            self.assertIn("/movie/7", url)
+            lang = (params or {}).get("language")
+            self.langs.append(lang)
+            return zh if lang == "zh-CN" else en
+
+        self.langs = []
+        card = catalog.Card("movie", "7", "搜索名", "TMDB", "https://example.com", raw={"title": "搜索名"})
+        with patch.object(catalog, "request", request):
+            result = await catalog.detail(card)
+        self.assertEqual(self.langs, ["zh-CN", "en-US"])
+        text = catalog.render_card(result)
+        self.assertIn("科幻", text)
+        self.assertNotIn("Action", text)
+        self.assertIn("中文简介", text)
+        self.assertNotIn("English plot", text)
+        self.assertIn("Your mind", text)
+        self.assertIn("导演 诺兰", text)
+        self.assertEqual(dict(result.facts)["导演"], "诺兰")
+
+    async def test_selling_points_fall_back_when_deepseek_fails(self):
+        await set_bot_config("deepseek_api_key", "fake")
+        payload = _sample(id=7)
+        card = catalog.Card("movie", "7", "盗梦空间", "TMDB", "https://example.com", raw=payload)
+        with patch.object(catalog, "request", AsyncMock(return_value=payload)), \
+             patch("services.filmspot.deepseek_call", AsyncMock(side_effect=RuntimeError("down"))):
+            failed = await catalog.detail(card)
+        failed_text = catalog.render_card(failed)
+        self.assertIn("你的思想不再是你的思想", failed_text)
+        self.assertIn("片名", failed_text)
+
+        await catalog.cache.clear()
+        with patch.object(catalog, "request", AsyncMock(return_value=payload)), \
+             patch("services.filmspot.deepseek_call", AsyncMock(return_value="梦中梦\n层层嵌套")):
+            polished = await catalog.detail(card)
+        text = catalog.render_card(polished)
+        self.assertIn("梦中梦", text)
+        self.assertIn("层层嵌套", text)
+        self.assertNotIn("你的思想不再是你的思想", text)
+
+    async def test_admin_pages_keep_existing_keys(self):
+        app = create_web_app("secret")
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            await client.post("/login", data={"password": "secret"})
+            settings = await client.get("/settings")
+            queries = await client.get("/queries")
+        self.assertEqual(settings.status_code, 200)
+        self.assertIn("卖点", settings.text)
+        self.assertIn('name="deepseek_api_key"', settings.text)
+        self.assertIn('name="tmdb_api_key"', settings.text)
+        self.assertNotIn("filmspot_channel", settings.text)
+        self.assertNotIn('name="filmspot', settings.text)
+        self.assertIn("FilmSpot", queries.text)
+        self.assertIn("音乐与书籍格式不变", queries.text)
 
 
 if __name__ == "__main__":

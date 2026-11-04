@@ -11,3 +11,6 @@ data/*.sqlite
 logs/
 .pytest_cache/
 .mypy_cache/
+
+.env*
+*.bak

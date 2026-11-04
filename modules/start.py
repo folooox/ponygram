@@ -1,72 +1,27 @@
-"""
-Built-in /start and /help command handlers.
-"""
-
-from __future__ import annotations
-
-from telegram import Update
-from telegram.ext import Application, CommandHandler
+"""Public private-chat onboarding and matching Telegram command menu."""
+import html
 from telegram.constants import ParseMode
-
-from bot.logger import get_logger
+from telegram.ext import CommandHandler, filters
+from bot.database import upsert_user
 from bot.router import registry
 
-log = get_logger(__name__)
+COMMAND_TEXT = ('/movie 片名 — 搜索电影\n/tv 剧名 — 搜索剧集\n/music 歌名 — 搜索音乐\n'
+                '/book 书名 — 搜索书籍\n/help — 使用说明\n/start — 欢迎与命令列表')
 
-_WELCOME = (
-    "👋 <b>Welcome to Ponygram Bot!</b>\n\n"
-    "I'm a modular Telegram bot with features for group management, "
-    "media parsing, AI dialogue, and more.\n\n"
-    "• Paste a YouTube / TikTok / Instagram URL → auto-download\n"
-    "• @mention me, say <b>pony …</b>, or reply to me → AI chat\n"
-    "• Use <b>@{username} movie avengers</b> for inline media search\n\n"
-    "Use /help to see available commands."
-)
-
-
-async def start(update: Update, context) -> None:
-    assert update.effective_message
-    bot_username = context.bot.username or "bot"
+async def start(update, context):
+    if update.effective_user:
+        await upsert_user(update.effective_user)
+    username = html.escape(context.bot.username or 'bot')
     await update.effective_message.reply_text(
-        _WELCOME.replace("{username}", bot_username),
-        parse_mode=ParseMode.HTML,
-    )
-    log.info("start command", user_id=update.effective_user and update.effective_user.id)
+        '👋 <b>欢迎使用 Ponygram</b>\n\n电影、剧集、音乐和书籍，一处查询。\n\n' + COMMAND_TEXT +
+        f'\n\n也可在任意聊天输入：\n<code>@{username} movie 星际穿越</code>\n'
+        'Inline 支持 movie、tv、music、book。\n\nRSS 仅推送到管理员配置的频道或群组，不向个人私聊发送。',
+        parse_mode=ParseMode.HTML)
 
+async def help_cmd(update, context):
+    await start(update, context)
 
-async def help_cmd(update: Update, context) -> None:
-    assert update.effective_message
-    text = (
-        "<b>Commands</b>\n\n"
-        "<b>Info</b>\n"
-        "/start — welcome message\n"
-        "/help — this message\n"
-        "/id — your Telegram ID\n"
-        "/whois — detailed user info\n"
-        "/warns — check warnings\n\n"
-        "<b>Group moderation</b> (admins only)\n"
-        "/mute /unmute — restrict messaging\n"
-        "/kick /ban /unban — remove users\n"
-        "/warn /clearwarns — warn system\n"
-        "/pin /unpin — pin messages\n\n"
-        "<b>Natural triggers</b>\n"
-        "• @mention me → AI reply\n"
-        "• Start with <b>pony </b> → AI reply\n"
-        "• Reply to my messages → AI reply\n"
-        "• Paste a media URL → auto-download\n\n"
-        "<b>Inline mode</b>\n"
-        "@{username} movie / tv / book / music / artist &lt;query&gt;"
-    )
-    bot_username = context.bot.username or "bot"
-    await update.effective_message.reply_text(
-        text.replace("{username}", bot_username),
-        parse_mode=ParseMode.HTML,
-    )
-
-
-def setup(application: Application) -> None:
-    registry.register_command("start", start, "Start the bot")
-    registry.register_command("help", help_cmd, "Show available commands")
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_cmd))
-    log.info("start module loaded")
+def setup(application):
+    for name, fn, desc in [('start', start, '欢迎与命令列表'), ('help', help_cmd, '查看使用说明')]:
+        registry.register_command(name, fn, desc)
+        application.add_handler(CommandHandler(name, fn, filters=filters.ChatType.PRIVATE))
